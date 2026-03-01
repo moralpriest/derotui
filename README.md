@@ -39,6 +39,21 @@ To launch from any terminal, place the binary in your PATH (for example):
 install -m 0755 derotui "$HOME/.local/bin/derotui"
 ```
 
+### Windows (PowerShell)
+
+Download and run the latest Windows release:
+
+```powershell
+$repo = "moralpriest/derotui"
+$api  = "https://api.github.com/repos/$repo/releases/latest"
+$rel  = Invoke-RestMethod -Uri $api
+$asset = $rel.assets | Where-Object { $_.name -like "*windows-amd64.exe" } | Select-Object -First 1
+Invoke-WebRequest -Uri $asset.browser_download_url -OutFile "derotui.exe"
+.\derotui.exe
+```
+
+Optional: move `derotui.exe` to a folder in your `PATH` (for example `%USERPROFILE%\bin`).
+
 ### Development tasks
 
 ```bash

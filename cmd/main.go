@@ -18,7 +18,6 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/walletapi"
-	"golang.org/x/sys/unix"
 
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"github.com/deroproject/dero-wallet-cli/internal/ui"
@@ -134,47 +133,8 @@ func main() {
 	m.Opts = opts
 	m.SetStartupFlowSet(m.ApplyCLIStartupFlags())
 
-	// Save original stdout/stderr file descriptors for Bubble Tea
-	// Then redirect at OS level to /dev/null to prevent DERO library corruption
-	origStdout, err := unix.Dup(int(os.Stdout.Fd()))
-	if err != nil {
-		fmt.Printf("Warning: failed to dup stdout: %v\n", err)
-		origStdout = -1
-	}
-	origStderr, err := unix.Dup(int(os.Stderr.Fd()))
-	if err != nil {
-		fmt.Printf("Warning: failed to dup stderr: %v\n", err)
-		origStderr = -1
-	}
-
-	// Open real /dev/tty for Bubble Tea output so color detection works.
-	// os.NewFile on a duped fd can be detected as non-TTY and strip styles.
-	ttyOut, err := os.OpenFile("/dev/tty", os.O_WRONLY, 0)
-	if err != nil {
-		ttyOut = os.Stdout
-	} else {
-		defer ttyOut.Close()
-	}
-
-	// Redirect stdout/stderr to /dev/null at OS level
-	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
-	if err == nil {
-		unix.Dup2(int(devNull.Fd()), int(os.Stdout.Fd()))
-		unix.Dup2(int(devNull.Fd()), int(os.Stderr.Fd()))
-		devNull.Close()
-	}
-
-	// Restore stdout/stderr after TUI exits
-	defer func() {
-		if origStdout >= 0 {
-			unix.Dup2(origStdout, int(os.Stdout.Fd()))
-			unix.Close(origStdout)
-		}
-		if origStderr >= 0 {
-			unix.Dup2(origStderr, int(os.Stderr.Fd()))
-			unix.Close(origStderr)
-		}
-	}()
+	ttyOut, restoreOutput := setupProgramOutput()
+	defer restoreOutput()
 
 	// Pass the original stdout to Bubble Tea explicitly
 	p := tea.NewProgram(&m, tea.WithOutput(ttyOut))
@@ -186,10 +146,7 @@ func main() {
 	setupSignalHandler(p)
 
 	if _, err := p.Run(); err != nil {
-		// Restore stdout before printing
-		if origStdout >= 0 {
-			unix.Dup2(origStdout, int(os.Stdout.Fd()))
-		}
+		restoreOutput()
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
 	}
