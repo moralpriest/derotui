@@ -68,7 +68,6 @@ tasks:
   ci:
     desc: CI checks
     cmds:
-      - task: tidy-check
       - task: fmt-check
       - task: vet
       - task: test-race
@@ -77,6 +76,7 @@ tasks:
   ci-advisory:
     desc: Advisory checks (non-blocking)
     cmds:
+      - task: tidy-check
       - task: lint
 
   security:
