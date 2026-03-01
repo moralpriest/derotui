@@ -1,0 +1,54 @@
+# Binaries
+derotui
+dero-wallet-cli
+main
+xswd-test
+*.exe
+
+# Go build artifacts
+*.o
+*.a
+
+# Wallet files (user data)
+*.db
+*.bak
+*.db.bak
+*.db-shm
+*.db-wal
+
+# Log files
+*.log
+derotui-debug.log
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup directories
+.backup_*/
+backups/
+
+# Local directories
+history/
+mainnet/
+mainnet_simulator/
+testnet/
+
+# Crush files (if using crush)
+.crush/
