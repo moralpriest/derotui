@@ -109,7 +109,7 @@ const (
 	DefaultMainnetDaemon   = "localhost:10102"
 	DefaultTestnetDaemon   = "localhost:40402"
 	DefaultSimulatorDaemon = "localhost:20000"
-	FallbackMainnetDaemon  = "https://node.derofoundation.org:11012"
+	FallbackMainnetDaemon  = "http://node.derofoundation.org:11012"
 	FallbackTestnetDaemon  = "69.30.234.163:40402"
 )
 
