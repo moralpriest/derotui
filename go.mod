@@ -12,14 +12,12 @@ require (
 	github.com/creachadair/jrpc2 v0.35.4
 	github.com/deroproject/derohe v0.0.0-20240229002921-e9df1205b660
 	github.com/gorilla/websocket v1.5.3
-	github.com/muesli/termenv v0.16.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	golang.org/x/sys v0.41.0
 )
 
 require (
 	github.com/VictoriaMetrics/metrics v1.40.2 // indirect
-	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/beevik/ntp v1.5.0 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/caarlos0/env/v6 v6.10.1 // indirect
@@ -49,7 +47,6 @@ require (
 	github.com/lesismal/llib v1.2.2 // indirect
 	github.com/lesismal/nbio v1.6.8 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-runewidth v0.0.20 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect

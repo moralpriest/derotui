@@ -35,6 +35,10 @@ jobs:
       - name: Run CI task
         run: task ci
 
+      - name: Run advisory lint
+        continue-on-error: true
+        run: task ci-advisory
+
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
