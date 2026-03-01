@@ -21,6 +21,14 @@ A modern terminal-based wallet for the DERO blockchain, built with [Bubble Tea](
 
 ## Installation
 
+### One-liner install (Linux/macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/moralpriest/derotui/main/scripts/install.sh | bash
+```
+
+### Build from source
+
 ```bash
 go build -o derotui ./cmd/
 ```
@@ -29,6 +37,14 @@ To launch from any terminal, place the binary in your PATH (for example):
 
 ```bash
 install -m 0755 derotui "$HOME/.local/bin/derotui"
+```
+
+### Development tasks
+
+```bash
+task ci
+task security
+task build
 ```
 
 ## Usage

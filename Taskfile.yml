@@ -1,0 +1,83 @@
+version: '3'
+
+tasks:
+  default:
+    desc: Show available tasks
+    cmds:
+      - task --list
+
+  fmt:
+    desc: Format Go source
+    cmds:
+      - go fmt ./...
+
+  fmt-check:
+    desc: Verify Go formatting
+    cmds:
+      - |
+        FILES=$(gofmt -l .)
+        if [ -n "$FILES" ]; then
+          echo "Go files are not formatted:"
+          echo "$FILES"
+          exit 1
+        fi
+
+  tidy-check:
+    desc: Verify go.mod/go.sum are tidy
+    cmds:
+      - go mod tidy
+      - git diff --exit-code go.mod go.sum
+
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+
+  test:
+    desc: Run unit tests
+    cmds:
+      - go test -v ./...
+
+  test-race:
+    desc: Run race tests with coverage
+    cmds:
+      - go test -v -race -coverprofile=coverage.out ./...
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+      - golangci-lint run --timeout=5m
+
+  vuln:
+    desc: Run govulncheck
+    cmds:
+      - go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+      - govulncheck ./...
+
+  gosec:
+    desc: Run gosec scanner
+    cmds:
+      - go install github.com/securego/gosec/v2/cmd/gosec@v2.22.2
+      - gosec -exclude=G115 -exclude-dir=vendor ./...
+
+  build:
+    desc: Build derotui binary
+    cmds:
+      - go build -trimpath -ldflags "-s -w" -o derotui ./cmd/
+
+  ci:
+    desc: CI checks
+    cmds:
+      - task: tidy-check
+      - task: fmt-check
+      - task: vet
+      - task: lint
+      - task: test-race
+      - task: build
+
+  security:
+    desc: Security checks
+    cmds:
+      - task: vuln
+      - task: gosec
