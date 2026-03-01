@@ -160,33 +160,39 @@ func (m *Model) updateWalletInfo() {
 	// Update send balance
 	m.send.SetBalance(info.Balance)
 
-	// Update transactions
-	txs := m.wallet.GetTransactions(50)
-	var pageTxs []pages.Transaction
-	for _, tx := range txs {
-		pageTxs = append(pageTxs, pages.Transaction{
-			TxID:            tx.TxID,
-			Amount:          tx.Amount,
-			Height:          tx.Height,
-			TopoHeight:      tx.TopoHeight,
-			Timestamp:       wallet.FormatTimestamp(tx.Timestamp),
-			Coinbase:        tx.Coinbase,
-			Incoming:        tx.Incoming,
-			Fee:             tx.Fee,
-			BlockHash:       tx.BlockHash,
-			Proof:           tx.Proof,
-			Sender:          tx.Sender,
-			Destination:     tx.Destination,
-			Burn:            tx.Burn,
-			DestinationPort: tx.DestinationPort,
-			SourcePort:      tx.SourcePort,
-			Status:          tx.Status,
-			Message:         tx.Message,
-		})
+	// Update transactions.
+	// When offline, refresh less frequently to reduce startup/connect latency
+	// for wallets with large histories.
+	shouldRefreshTxs := info.IsOnline || m.lastTxRefreshAt.IsZero() || time.Since(m.lastTxRefreshAt) >= txRefreshIntervalOffline
+	if shouldRefreshTxs {
+		txs := m.wallet.GetTransactions(50)
+		var pageTxs []pages.Transaction
+		for _, tx := range txs {
+			pageTxs = append(pageTxs, pages.Transaction{
+				TxID:            tx.TxID,
+				Amount:          tx.Amount,
+				Height:          tx.Height,
+				TopoHeight:      tx.TopoHeight,
+				Timestamp:       wallet.FormatTimestamp(tx.Timestamp),
+				Coinbase:        tx.Coinbase,
+				Incoming:        tx.Incoming,
+				Fee:             tx.Fee,
+				BlockHash:       tx.BlockHash,
+				Proof:           tx.Proof,
+				Sender:          tx.Sender,
+				Destination:     tx.Destination,
+				Burn:            tx.Burn,
+				DestinationPort: tx.DestinationPort,
+				SourcePort:      tx.SourcePort,
+				Status:          tx.Status,
+				Message:         tx.Message,
+			})
+		}
+		pageTxs = m.mergePendingOutgoing(pageTxs)
+		m.dashboard.SetRecentTxs(pageTxs)
+		m.history.SetTransactions(pageTxs)
+		m.lastTxRefreshAt = time.Now()
 	}
-	pageTxs = m.mergePendingOutgoing(pageTxs)
-	m.dashboard.SetRecentTxs(pageTxs)
-	m.history.SetTransactions(pageTxs)
 
 	if m.page == PageMain && !info.IsRegistered && !m.regHintShown {
 		m.dashboard.SetFlashMessage("Wallet not registered. Press [G] to register.", false)

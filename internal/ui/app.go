@@ -37,8 +37,9 @@ const donationAddress = "deroi1qy8zrqrgqgcu6ayznw5zl9a50erdxgjd539rh3hz7qgu4zl4a
 const debugExpandedLogLines = 3
 
 const (
-	initialDaemonRetryInterval = 10 * time.Second
-	maxDaemonRetryInterval     = 60 * time.Second
+	initialDaemonRetryInterval = 3 * time.Second
+	maxDaemonRetryInterval     = 20 * time.Second
+	txRefreshIntervalOffline   = 30 * time.Second
 )
 
 // SetupLogging configures debug logging when --debug flag is enabled
@@ -208,6 +209,7 @@ type Model struct {
 	startupFlowSet   bool
 	lastDaemonRetry  time.Time
 	daemonRetryAfter time.Duration
+	lastTxRefreshAt  time.Time
 }
 
 type pendingOutgoingTx struct {
@@ -662,6 +664,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedDaemonAddress = ""
 			m.lastDaemonRetry = time.Time{}
 			m.daemonRetryAfter = initialDaemonRetryInterval
+			m.lastTxRefreshAt = time.Time{}
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.page = PageMain
 			// Don't call updateWalletInfo() here - wait for daemon connection to complete
@@ -720,6 +723,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedDaemonAddress = ""
 			m.lastDaemonRetry = time.Time{}
 			m.daemonRetryAfter = initialDaemonRetryInterval
+			m.lastTxRefreshAt = time.Time{}
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.seed = pages.NewSeed(pages.SeedModeDisplay, msg.seed)
 			m.page = PageSeed
@@ -777,6 +781,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedDaemonAddress = ""
 			m.lastDaemonRetry = time.Time{}
 			m.daemonRetryAfter = initialDaemonRetryInterval
+			m.lastTxRefreshAt = time.Time{}
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.page = PageMain
 			// Don't call updateWalletInfo() here - wait for daemon connection to complete
