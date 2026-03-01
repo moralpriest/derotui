@@ -36,6 +36,11 @@ const donationAddress = "deroi1qy8zrqrgqgcu6ayznw5zl9a50erdxgjd539rh3hz7qgu4zl4a
 
 const debugExpandedLogLines = 3
 
+const (
+	initialDaemonRetryInterval = 10 * time.Second
+	maxDaemonRetryInterval     = 60 * time.Second
+)
+
 // SetupLogging configures debug logging when --debug flag is enabled
 func SetupLogging(debug bool) {
 	if !debug {
@@ -201,6 +206,8 @@ type Model struct {
 	pendingRegHeight uint64
 	pendingOutgoing  map[string]pendingOutgoingTx
 	startupFlowSet   bool
+	lastDaemonRetry  time.Time
+	daemonRetryAfter time.Duration
 }
 
 type pendingOutgoingTx struct {
@@ -221,17 +228,18 @@ func NewModel() Model {
 	applyFilePickerTheme(&fp)
 
 	m := Model{
-		page:       PageWelcome,
-		filePicker: fp,
-		welcome:    pages.NewWelcome(),
-		password:   pages.NewPassword(pages.PasswordModeUnlock),
-		network:    pages.NewNetwork(""),
-		keyInput:   pages.NewKeyInput(),
-		dashboard:  pages.NewDashboard(),
-		send:       pages.NewSend(),
-		history:    pages.NewHistory(),
-		txDetails:  pages.NewTxDetails(),
-		daemon:     pages.NewDaemon(false, false),
+		page:             PageWelcome,
+		filePicker:       fp,
+		welcome:          pages.NewWelcome(),
+		password:         pages.NewPassword(pages.PasswordModeUnlock),
+		network:          pages.NewNetwork(""),
+		keyInput:         pages.NewKeyInput(),
+		dashboard:        pages.NewDashboard(),
+		send:             pages.NewSend(),
+		history:          pages.NewHistory(),
+		txDetails:        pages.NewTxDetails(),
+		daemon:           pages.NewDaemon(false, false),
+		daemonRetryAfter: initialDaemonRetryInterval,
 	}
 	m.welcome.Version = Version
 	m.password.SetVersion(Version)
@@ -525,6 +533,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateWalletInfo()
 			// Update title to reflect current balance and sync status
 			cmds = append(cmds, m.setWindowTitleCmd())
+
+			// Auto-retry daemon connection for open wallet when offline.
+			// This recovers from transient websocket failures without requiring
+			// manual /connect after wallet open/restore.
+			if !m.Opts.Offline && !m.dashboard.IsConnecting {
+				info := m.wallet.GetInfo()
+				now := time.Now()
+				if !info.IsOnline && (m.lastDaemonRetry.IsZero() || now.Sub(m.lastDaemonRetry) >= m.daemonRetryAfter) {
+					m.lastDaemonRetry = now
+					m.dashboard.SetConnecting(true)
+					cmds = append(cmds, m.connectWalletToDaemonAsync())
+				}
+			}
 		} else if m.page == PageWelcome {
 			// Refresh daemon status on welcome page
 			cmds = append(cmds, m.checkDaemonStatus())
@@ -639,6 +660,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.wallet.ClearDaemonAddress()
 			m.cachedDaemonHealthy = false
 			m.cachedDaemonAddress = ""
+			m.lastDaemonRetry = time.Time{}
+			m.daemonRetryAfter = initialDaemonRetryInterval
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.page = PageMain
 			// Don't call updateWalletInfo() here - wait for daemon connection to complete
@@ -695,6 +718,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.wallet.ClearDaemonAddress()
 			m.cachedDaemonHealthy = false
 			m.cachedDaemonAddress = ""
+			m.lastDaemonRetry = time.Time{}
+			m.daemonRetryAfter = initialDaemonRetryInterval
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.seed = pages.NewSeed(pages.SeedModeDisplay, msg.seed)
 			m.page = PageSeed
@@ -750,6 +775,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.wallet.ClearDaemonAddress()
 			m.cachedDaemonHealthy = false
 			m.cachedDaemonAddress = ""
+			m.lastDaemonRetry = time.Time{}
+			m.daemonRetryAfter = initialDaemonRetryInterval
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.page = PageMain
 			// Don't call updateWalletInfo() here - wait for daemon connection to complete
@@ -822,6 +849,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Async daemon connection completed
 		m.dashboard.SetConnecting(false)
 		if msg.connected {
+			m.lastDaemonRetry = time.Time{}
+			m.daemonRetryAfter = initialDaemonRetryInterval
 			m.updateWalletInfo() // Refresh balance/status now that we're connected
 			// Update daemon address to match what wallet connected to
 			// This ensures welcome screen shows correct daemon when wallet is closed
@@ -848,6 +877,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		} else if msg.err != "" {
+			if m.daemonRetryAfter <= 0 {
+				m.daemonRetryAfter = initialDaemonRetryInterval
+			} else {
+				m.daemonRetryAfter *= 2
+				if m.daemonRetryAfter > maxDaemonRetryInterval {
+					m.daemonRetryAfter = maxDaemonRetryInterval
+				}
+			}
 			// Daemon connection failed - keep wallet OPEN and show dashboard offline
 			// User can use /connect to retry or continue offline
 			m.dashboard.SetFlashMessage(msg.err+" - Wallet opened offline. Use /connect to retry.", false)
