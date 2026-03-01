@@ -203,6 +203,8 @@ type Wallet struct {
 	testnet       bool
 	simulator     bool
 	daemonAddress string
+	syncMu        sync.Mutex
+	syncInFlight  bool
 
 	// Cache for transactions to avoid redundant syncs.
 	// Protected by txCacheMu - must hold lock when reading/writing cache fields
@@ -211,6 +213,36 @@ type Wallet struct {
 	txCacheHeight uint64
 	txCacheTopo   int64
 	txCacheTime   time.Time
+}
+
+func (w *Wallet) syncWalletMemoryAsync() {
+	if w.wallet == nil {
+		return
+	}
+
+	w.syncMu.Lock()
+	if w.syncInFlight {
+		w.syncMu.Unlock()
+		return
+	}
+	w.syncInFlight = true
+	w.syncMu.Unlock()
+
+	go func() {
+		start := time.Now()
+		defer func() {
+			w.syncMu.Lock()
+			w.syncInFlight = false
+			w.syncMu.Unlock()
+		}()
+
+		if err := w.wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+			log.Warn("wallet", "sync.warning", "Background wallet sync warning", "error", err.Error())
+			return
+		}
+
+		log.Debug("wallet", "sync.done", "Background wallet sync completed", "duration", log.FormatDuration(time.Since(start)))
+	}()
 }
 
 // Open opens an existing wallet
@@ -1330,7 +1362,7 @@ func (w *Wallet) ConnectToLocalDaemonFast(knownHealthy bool, knownAddress string
 	w.wallet.SetDaemonAddress(daemon)
 	w.wallet.SetNetwork(!w.testnet)
 	w.wallet.SetOnlineMode()
-	w.wallet.Sync_Wallet_Memory_With_Daemon()
+	w.syncWalletMemoryAsync()
 	w.daemonAddress = daemon
 
 	// Update network string
