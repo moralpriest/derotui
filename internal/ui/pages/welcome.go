@@ -795,6 +795,7 @@ func formatBlockHeight(n uint64) string {
 }
 
 func truncateWelcomeAddress(addr string, max int) string {
+	addr = stripDaemonScheme(addr)
 	if max <= 3 || len(addr) <= max {
 		return addr
 	}

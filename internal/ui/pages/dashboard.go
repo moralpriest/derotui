@@ -791,6 +791,7 @@ func (d *DashboardModel) SetDebugEnabled(enabled bool) {
 }
 
 func truncateDaemonAddress(addr string, maxLen int) string {
+	addr = stripDaemonScheme(addr)
 	if len(addr) <= maxLen || maxLen < 4 {
 		return addr
 	}
