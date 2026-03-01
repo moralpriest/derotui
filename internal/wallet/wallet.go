@@ -32,6 +32,8 @@ import (
 
 // NormalizeDaemonAddress normalizes daemon endpoints to host:port format.
 // Accepts host:port and http(s)://host[:port] inputs.
+// For URL inputs, the scheme is preserved so websocket transport can
+// correctly choose ws:// vs wss:// during wallet daemon connection.
 func NormalizeDaemonAddress(address string) (string, error) {
 	raw := strings.TrimSpace(address)
 	if raw == "" {
@@ -50,6 +52,12 @@ func NormalizeDaemonAddress(address string) (string, error) {
 		if host == "" {
 			return "", fmt.Errorf("daemon URL missing host")
 		}
+		if u.Path != "" && u.Path != "/" {
+			return "", fmt.Errorf("daemon URL must not include path")
+		}
+		if u.RawQuery != "" || u.Fragment != "" {
+			return "", fmt.Errorf("daemon URL must not include query or fragment")
+		}
 		port := u.Port()
 		if port == "" {
 			if u.Scheme == "https" {
@@ -58,7 +66,7 @@ func NormalizeDaemonAddress(address string) (string, error) {
 				port = "80"
 			}
 		}
-		return net.JoinHostPort(host, port), nil
+		return u.Scheme + "://" + net.JoinHostPort(host, port), nil
 	}
 
 	if _, _, err := net.SplitHostPort(raw); err != nil {
@@ -68,10 +76,31 @@ func NormalizeDaemonAddress(address string) (string, error) {
 	return raw, nil
 }
 
+func daemonHostPort(address string) (string, error) {
+	normalized, err := NormalizeDaemonAddress(address)
+	if err != nil {
+		return "", err
+	}
+	if strings.Contains(normalized, "://") {
+		u, err := url.Parse(normalized)
+		if err != nil {
+			return "", fmt.Errorf("invalid daemon URL: %w", err)
+		}
+		if u.Host == "" {
+			return "", fmt.Errorf("daemon URL missing host")
+		}
+		return u.Host, nil
+	}
+	return normalized, nil
+}
+
 func daemonRPCURL(address string) (string, error) {
 	normalized, err := NormalizeDaemonAddress(address)
 	if err != nil {
 		return "", err
+	}
+	if strings.Contains(normalized, "://") {
+		return normalized + "/json_rpc", nil
 	}
 	return "http://" + normalized + "/json_rpc", nil
 }
@@ -80,7 +109,7 @@ const (
 	DefaultMainnetDaemon   = "localhost:10102"
 	DefaultTestnetDaemon   = "localhost:40402"
 	DefaultSimulatorDaemon = "localhost:20000"
-	FallbackMainnetDaemon  = "node.derofoundation.org:11012"
+	FallbackMainnetDaemon  = "https://node.derofoundation.org:11012"
 	FallbackTestnetDaemon  = "69.30.234.163:40402"
 )
 
@@ -1138,11 +1167,11 @@ func FormatTimestamp(ts int64) string {
 
 // CheckDaemon checks if a daemon is reachable at the given address
 func CheckDaemon(address string) bool {
-	normalized, err := NormalizeDaemonAddress(address)
+	hostPort, err := daemonHostPort(address)
 	if err != nil {
 		return false
 	}
-	conn, err := net.DialTimeout("tcp", normalized, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", hostPort, 2*time.Second)
 	if err != nil {
 		return false
 	}
@@ -1152,11 +1181,11 @@ func CheckDaemon(address string) bool {
 
 // CheckDaemonFast checks if a daemon is reachable with a shorter timeout
 func CheckDaemonFast(address string) bool {
-	normalized, err := NormalizeDaemonAddress(address)
+	hostPort, err := daemonHostPort(address)
 	if err != nil {
 		return false
 	}
-	conn, err := net.DialTimeout("tcp", normalized, 800*time.Millisecond)
+	conn, err := net.DialTimeout("tcp", hostPort, 800*time.Millisecond)
 	if err != nil {
 		return false
 	}

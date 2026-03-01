@@ -19,10 +19,11 @@ func TestNormalizeDaemonAddress(t *testing.T) {
 		wantErr bool
 	}{
 		{name: "host port", in: "localhost:10102", want: "localhost:10102"},
-		{name: "http url", in: "http://localhost:10102", want: "localhost:10102"},
-		{name: "https default port", in: "https://node.example.com", want: "node.example.com:443"},
-		{name: "https custom port", in: "https://node.example.com:40402", want: "node.example.com:40402"},
+		{name: "http url", in: "http://localhost:10102", want: "http://localhost:10102"},
+		{name: "https default port", in: "https://node.example.com", want: "https://node.example.com:443"},
+		{name: "https custom port", in: "https://node.example.com:40402", want: "https://node.example.com:40402"},
 		{name: "trim spaces", in: "  localhost:20000  ", want: "localhost:20000"},
+		{name: "invalid path", in: "https://node.example.com:40402/json_rpc", wantErr: true},
 		{name: "invalid no port", in: "localhost", wantErr: true},
 		{name: "invalid scheme", in: "ftp://node.example.com", wantErr: true},
 		{name: "empty", in: "", wantErr: true},
