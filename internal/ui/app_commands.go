@@ -473,6 +473,13 @@ func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
 	if m.stickyDaemonAddress != "" {
 		knownHealthy = m.stickyDaemonHealthy
 		knownAddress = m.stickyDaemonAddress
+	} else if m.Opts.DaemonAddress != "" {
+		// If we already have a daemon endpoint selected (CLI/autodetect/fallback),
+		// prefer it to avoid retrying localhost first.
+		knownAddress = m.Opts.DaemonAddress
+		if info := wallet.GetDaemonInfo(context.Background(), knownAddress); info.IsHealthy {
+			knownHealthy = true
+		}
 	}
 	return func() tea.Msg {
 		if w == nil {
@@ -481,7 +488,29 @@ func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
 		if m.Opts.Offline {
 			return walletDaemonConnectedMsg{connected: false, err: "Offline mode enabled"}
 		}
-		connected, errMsg := w.ConnectToLocalDaemonFast(knownHealthy, knownAddress)
+
+		// Guard wallet websocket connection with timeout to prevent indefinitely
+		// stuck "connecting" state on platforms where Connect may hang.
+		type connectResult struct {
+			connected bool
+			errMsg    string
+		}
+		resultCh := make(chan connectResult, 1)
+		go func() {
+			connected, errMsg := w.ConnectToLocalDaemonFast(knownHealthy, knownAddress)
+			resultCh <- connectResult{connected: connected, errMsg: errMsg}
+		}()
+
+		var connected bool
+		var errMsg string
+		select {
+		case res := <-resultCh:
+			connected = res.connected
+			errMsg = res.errMsg
+		case <-time.After(12 * time.Second):
+			connected = false
+			errMsg = "daemon websocket connect timed out"
+		}
 
 		// Get network type and daemon address from wallet after connection
 		var network config.WalletNetwork
