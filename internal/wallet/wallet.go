@@ -255,6 +255,16 @@ func (w *Wallet) isSyncInFlight() bool {
 	return inFlight
 }
 
+func shouldUseCachedTxsDuringSync(started, inFlight bool) bool {
+	// If this call started a sync, still fetch transfers once so cache can be
+	// populated for recent activity/history. Only short-circuit when another
+	// sync was already in progress.
+	if started {
+		return false
+	}
+	return inFlight
+}
+
 // Open opens an existing wallet
 func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 	start := time.Now()
@@ -813,7 +823,7 @@ func (w *Wallet) GetTransactions(count int) []TransactionInfo {
 	var scid crypto.Hash
 	if w.wallet.GetMode() && walletapi.IsDaemonOnline() {
 		started := w.syncWalletMemoryAsync()
-		if started || w.isSyncInFlight() {
+		if shouldUseCachedTxsDuringSync(started, w.isSyncInFlight()) {
 			w.txCacheMu.RLock()
 			defer w.txCacheMu.RUnlock()
 			if len(w.txCache) > 0 {

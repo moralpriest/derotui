@@ -134,6 +134,29 @@ func TestTxCacheInvalidation(t *testing.T) {
 	w.txCacheMu.RUnlock()
 }
 
+func TestShouldUseCachedTxsDuringSync(t *testing.T) {
+	tests := []struct {
+		name     string
+		started  bool
+		inFlight bool
+		want     bool
+	}{
+		{name: "sync just started by this call", started: true, inFlight: true, want: false},
+		{name: "sync just started with stale in-flight read", started: true, inFlight: false, want: false},
+		{name: "separate sync already in flight", started: false, inFlight: true, want: true},
+		{name: "no sync in flight", started: false, inFlight: false, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldUseCachedTxsDuringSync(tt.started, tt.inFlight)
+			if got != tt.want {
+				t.Fatalf("shouldUseCachedTxsDuringSync(%v, %v) = %v, want %v", tt.started, tt.inFlight, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestValidateSeed tests seed phrase validation
 func TestValidateSeed(t *testing.T) {
 	tests := []struct {
