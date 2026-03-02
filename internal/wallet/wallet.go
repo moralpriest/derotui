@@ -215,15 +215,15 @@ type Wallet struct {
 	txCacheTime   time.Time
 }
 
-func (w *Wallet) syncWalletMemoryAsync() {
+func (w *Wallet) syncWalletMemoryAsync() bool {
 	if w.wallet == nil {
-		return
+		return false
 	}
 
 	w.syncMu.Lock()
 	if w.syncInFlight {
 		w.syncMu.Unlock()
-		return
+		return false
 	}
 	w.syncInFlight = true
 	w.syncMu.Unlock()
@@ -243,6 +243,15 @@ func (w *Wallet) syncWalletMemoryAsync() {
 
 		log.Debug("wallet", "sync.done", "Background wallet sync completed", "duration", log.FormatDuration(time.Since(start)))
 	}()
+
+	return true
+}
+
+func (w *Wallet) isSyncInFlight() bool {
+	w.syncMu.Lock()
+	inFlight := w.syncInFlight
+	w.syncMu.Unlock()
+	return inFlight
 }
 
 // Open opens an existing wallet
@@ -797,12 +806,24 @@ func (w *Wallet) GetTransactions(count int) []TransactionInfo {
 	}
 	w.txCacheMu.RUnlock()
 
-	// Sync with daemon first to pick up outgoing transactions
-	// Must check GetMode() (wallet online mode) AND IsDaemonOnline() - same as original CLI
+	// Sync with daemon in background to pick up outgoing transactions.
+	// To avoid freezes and lock contention, do not run Show_Transfers while
+	// a background sync is in flight.
 	var scid crypto.Hash
 	if w.wallet.GetMode() && walletapi.IsDaemonOnline() {
-		if err := w.wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
-			log.Warn("wallet", "sync.warning", "Wallet sync warning", "error", err.Error())
+		started := w.syncWalletMemoryAsync()
+		if started || w.isSyncInFlight() {
+			w.txCacheMu.RLock()
+			defer w.txCacheMu.RUnlock()
+			if len(w.txCache) > 0 {
+				result := make([]TransactionInfo, len(w.txCache))
+				copy(result, w.txCache)
+				if len(result) <= count {
+					return result
+				}
+				return result[:count]
+			}
+			return nil
 		}
 	}
 
@@ -1362,7 +1383,6 @@ func (w *Wallet) ConnectToLocalDaemonFast(knownHealthy bool, knownAddress string
 	w.wallet.SetDaemonAddress(daemon)
 	w.wallet.SetNetwork(!w.testnet)
 	w.wallet.SetOnlineMode()
-	w.syncWalletMemoryAsync()
 	w.daemonAddress = daemon
 
 	// Update network string
