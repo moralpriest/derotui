@@ -9,7 +9,7 @@ A modern terminal-based wallet for the DERO blockchain, built with [Bubble Tea](
 - **Auto-Open**: Automatically reopens your last wallet on startup with password prompt
 - **CLI Startup Flows**: Supports direct create/restore startup and optional password auto-open
 - **Real-time Updates**: Balance and sync status update automatically
-- **Send/Receive**: Transfer DERO with integrated address and destination port support
+- **Send/Receive**: Transfer DERO to an address or on-chain username, with integrated address and destination port support
 - **Payment Requests**: Generate integrated addresses with embedded payment details
 - **Transaction History**: View all transactions with color-coded types and full details
 - **QR Codes**: Generate QR codes for wallet addresses and integrated addresses
@@ -107,30 +107,6 @@ task build
 ./derotui --simulator
 ```
 
-## Important Limitations
-
-### Network Switching Requires App Restart
-
-**Due to architectural limitations in the underlying walletapi library, you cannot switch between different network types (Mainnet/Testnet/Simulator) without restarting the application.**
-
-- **Mainnet wallets** (default, port 10102)
-- **Testnet wallets** (port 40402) - start with `--testnet` flag
-- **Simulator wallets** (port 20000) - start with `--simulator` flag
-
-**Example workflow:**
-```bash
-# For mainnet wallets (default)
-./derotui
-
-# For testnet wallets - must restart with flag
-./derotui --testnet
-
-# For simulator wallets - must restart with flag
-./derotui --simulator
-```
-
-If you try to open a wallet with a different network than the current connection, you'll see an error message explaining that a restart is required.
-
 ## CLI Startup Behavior
 
 - `--generate-new-wallet` starts directly in wallet creation flow.
@@ -209,6 +185,10 @@ Available color themes (selected theme is saved and restored on startup):
 - `Arrow Left/Right` - Adjust ring size
 - `Enter` - Send (when valid)
 - `Esc` - Cancel
+
+Recipient field accepts either:
+- a standard DERO address, or
+- a plain username resolved on-chain through the connected daemon name service (no `@` prefix)
 
 ### Seed/Key Display
 - `C` - Copy to clipboard
