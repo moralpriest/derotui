@@ -21,11 +21,22 @@ A modern terminal-based wallet for the DERO blockchain, built with [Bubble Tea](
 
 ## Installation
 
-### One-liner install (Linux/macOS)
+### One-liner install (Linux/macOS/Termux)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/moralpriest/derotui/main/scripts/install.sh | bash
 ```
+
+### Termux (Android)
+
+```bash
+pkg update && pkg upgrade -y
+pkg install -y curl
+curl -fsSL https://raw.githubusercontent.com/moralpriest/derotui/main/scripts/install.sh | bash
+derotui --help
+```
+
+The installer auto-detects Termux and installs `derotui` to `$PREFIX/bin`.
 
 ### Build from source
 

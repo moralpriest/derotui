@@ -18,8 +18,19 @@ need_cmd sha256sum
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
 
+is_termux=0
+if [ -n "${TERMUX_VERSION:-}" ] || [ -d "/data/data/com.termux" ]; then
+  is_termux=1
+fi
+
 case "$OS" in
-  linux) GOOS="linux" ;;
+  linux)
+    if [ "$is_termux" -eq 1 ]; then
+      GOOS="android"
+    else
+      GOOS="linux"
+    fi
+    ;;
   darwin) GOOS="darwin" ;;
   *)
     echo "error: unsupported OS: $OS" >&2
@@ -63,10 +74,15 @@ curl -fsSL "${BASE_URL}/${CHECKSUMS}" -o "${TMP_DIR}/${CHECKSUMS}"
 
 chmod +x "${TMP_DIR}/${ASSET}"
 
-TARGET_DIR="/usr/local/bin"
-if [ ! -w "$TARGET_DIR" ]; then
-  TARGET_DIR="$HOME/.local/bin"
+if [ "$is_termux" -eq 1 ]; then
+  TARGET_DIR="${PREFIX:-$HOME/.termux}/bin"
   mkdir -p "$TARGET_DIR"
+else
+  TARGET_DIR="/usr/local/bin"
+  if [ ! -w "$TARGET_DIR" ]; then
+    TARGET_DIR="$HOME/.local/bin"
+    mkdir -p "$TARGET_DIR"
+  fi
 fi
 
 install -m 0755 "${TMP_DIR}/${ASSET}" "${TARGET_DIR}/${BIN_NAME}"
