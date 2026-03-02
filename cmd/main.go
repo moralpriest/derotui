@@ -199,10 +199,20 @@ func parseFlags() ui.CLIOptions {
 
 	// Accept daemon address as positional argument (e.g., "derotui --testnet host:port")
 	if opts.DaemonAddress == "" && flag.NArg() > 0 {
-		arg := flag.Arg(0)
-		// If it looks like a host:port or hostname, use it as daemon address
-		if strings.Contains(arg, ":") || strings.Contains(arg, ".") {
-			opts.DaemonAddress = arg
+		arg := strings.TrimSpace(flag.Arg(0))
+		if arg != "" {
+			// Guard against shell/runtime oddities where executable path may be
+			// passed as first positional argument (observed on some Termux setups).
+			if strings.HasPrefix(arg, "/") {
+				if _, err := os.Stat(arg); err == nil {
+					return opts
+				}
+			}
+
+			// Only treat positional argument as daemon endpoint when it validates.
+			if _, err := wallet.NormalizeDaemonAddress(arg); err == nil {
+				opts.DaemonAddress = arg
+			}
 		}
 	}
 
