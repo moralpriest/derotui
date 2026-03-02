@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/deroproject/dero-wallet-cli/internal/log"
 	"github.com/deroproject/derohe/cryptography/crypto"
@@ -1002,11 +1003,17 @@ func (w *Wallet) Transfer(params TransferParams) TransferResult {
 			float64(balance)/100000, float64(params.Amount)/100000)}
 	}
 
-	// Validate destination address and parse for integrated address handling
-	addr, err := globals.ParseValidateAddress(params.Destination)
+	// Validate destination and resolve username to address if needed.
+	resolvedDestination, addr, err := resolveTransferDestination(
+		params.Destination,
+		globals.ParseValidateAddress,
+		func(name string) (string, error) {
+			return w.wallet.NameToAddress(name)
+		},
+	)
 	if err != nil {
-		log.Error("wallet", "transfer.failed", "Transfer failed: invalid address", "error", err.Error())
-		return TransferResult{Error: fmt.Sprintf("invalid address: %v", err)}
+		log.Error("wallet", "transfer.failed", "Transfer failed: invalid recipient", "error", err.Error())
+		return TransferResult{Error: err.Error()}
 	}
 
 	// Validate ringsize - must be power of 2 between 2 and 128
@@ -1094,7 +1101,7 @@ func (w *Wallet) Transfer(params TransferParams) TransferResult {
 	transfers := []rpc.Transfer{
 		{
 			Amount:      params.Amount,
-			Destination: params.Destination,
+			Destination: resolvedDestination,
 			Payload_RPC: arguments,
 		},
 	}
@@ -1143,6 +1150,49 @@ func (w *Wallet) Transfer(params TransferParams) TransferResult {
 // isPowerOf2 checks if a number is a power of 2
 func isPowerOf2(n int) bool {
 	return n > 0 && (n&(n-1)) == 0
+}
+
+func isValidUsernameCandidate(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasPrefix(name, "@") || len(name) > 64 {
+		return false
+	}
+
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+
+	return true
+}
+
+func resolveTransferDestination(destination string, parseFn func(string) (*rpc.Address, error), resolveNameFn func(string) (string, error)) (string, *rpc.Address, error) {
+	destination = strings.TrimSpace(destination)
+	if destination == "" {
+		return "", nil, fmt.Errorf("recipient is required")
+	}
+
+	if addr, err := parseFn(destination); err == nil {
+		return destination, addr, nil
+	}
+
+	if !isValidUsernameCandidate(destination) {
+		return "", nil, fmt.Errorf("invalid DERO address or username")
+	}
+
+	resolved, err := resolveNameFn(destination)
+	if err != nil {
+		return "", nil, fmt.Errorf("failed to resolve username %q: %w", destination, err)
+	}
+
+	addr, err := parseFn(strings.TrimSpace(resolved))
+	if err != nil {
+		return "", nil, fmt.Errorf("username %q resolved to invalid address", destination)
+	}
+
+	return strings.TrimSpace(resolved), addr, nil
 }
 
 // SetDaemon sets the daemon address

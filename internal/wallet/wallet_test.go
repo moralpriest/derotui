@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/deroproject/derohe/rpc"
 )
 
 func TestNormalizeDaemonAddress(t *testing.T) {
@@ -239,6 +241,62 @@ func TestValidateWord(t *testing.T) {
 				t.Errorf("ValidateWord() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestResolveTransferDestination_Address(t *testing.T) {
+	addr := "dero1valid"
+	parse := func(s string) (*rpc.Address, error) {
+		if s == addr {
+			return &rpc.Address{}, nil
+		}
+		return nil, fmt.Errorf("invalid")
+	}
+	resolved, _, err := resolveTransferDestination(addr, parse, func(name string) (string, error) {
+		return "", fmt.Errorf("unexpected resolve call for %s", name)
+	})
+	if err != nil {
+		t.Fatalf("expected address to pass directly, got error: %v", err)
+	}
+	if resolved != addr {
+		t.Fatalf("resolved destination mismatch: got %q want %q", resolved, addr)
+	}
+}
+
+func TestResolveTransferDestination_UsernameResolved(t *testing.T) {
+	resolvedAddr := "dero1resolved"
+	parse := func(s string) (*rpc.Address, error) {
+		if s == resolvedAddr {
+			return &rpc.Address{}, nil
+		}
+		return nil, fmt.Errorf("invalid")
+	}
+	resolved, _, err := resolveTransferDestination("alice", parse, func(name string) (string, error) {
+		if name != "alice" {
+			return "", fmt.Errorf("unexpected username %q", name)
+		}
+		return resolvedAddr, nil
+	})
+	if err != nil {
+		t.Fatalf("expected username resolution to succeed, got error: %v", err)
+	}
+	if resolved != resolvedAddr {
+		t.Fatalf("resolved destination mismatch: got %q want %q", resolved, resolvedAddr)
+	}
+}
+
+func TestResolveTransferDestination_InvalidUsername(t *testing.T) {
+	parse := func(s string) (*rpc.Address, error) {
+		return nil, fmt.Errorf("invalid")
+	}
+	_, _, err := resolveTransferDestination("@alice", parse, func(name string) (string, error) {
+		return "", nil
+	})
+	if err == nil {
+		t.Fatal("expected invalid username to fail")
+	}
+	if !strings.Contains(err.Error(), "invalid DERO address or username") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

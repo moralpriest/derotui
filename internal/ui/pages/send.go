@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
@@ -22,6 +23,22 @@ import (
 // isNumericChar returns true if the rune is a digit or decimal point
 func isNumericChar(r rune) bool {
 	return (r >= '0' && r <= '9') || r == '.'
+}
+
+func isValidUsernameCandidate(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.HasPrefix(name, "@") || len(name) > 64 {
+		return false
+	}
+
+	for _, r := range name {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+
+	return true
 }
 
 // abs returns the absolute value of an integer
@@ -108,7 +125,7 @@ type processingMinDurationMsg time.Time
 // NewSend creates a new send page
 func NewSend() SendModel {
 	m := SendModel{
-		addressInput:   components.NewInput("", "Recipient address", false),
+		addressInput:   components.NewInput("", "Recipient address or username", false),
 		amountInput:    components.NewInput("", "0.00000", false),
 		messageInput:   components.NewInput("", "Message (optional)", false),
 		paymentIDInput: components.NewInput("", "Destination Port / Payment ID (optional)", false),
@@ -547,11 +564,24 @@ func (s *SendModel) validateAddress() {
 
 	addr, err := globals.ParseValidateAddress(addrStr)
 	if err != nil {
+		if isValidUsernameCandidate(addrStr) {
+			s.addressStatus = FieldValid
+			s.isIntegrated = false
+			s.integratedPort = 0
+			s.integratedMsg = ""
+			s.integratedAmount = 0
+			s.lastParsedAddress = ""
+			s.paymentIDInput.Disabled = false
+			return
+		}
+
 		s.addressStatus = FieldInvalid
 		s.isIntegrated = false
 		s.integratedPort = 0
 		s.integratedMsg = ""
+		s.integratedAmount = 0
 		s.lastParsedAddress = ""
+		s.paymentIDInput.Disabled = false
 		return
 	}
 
@@ -668,8 +698,8 @@ func (s SendModel) validate() string {
 	if addr == "" {
 		return "Recipient address is required"
 	}
-	if _, err := globals.ParseValidateAddress(addr); err != nil {
-		return "Invalid DERO address"
+	if _, err := globals.ParseValidateAddress(addr); err != nil && !isValidUsernameCandidate(addr) {
+		return "Invalid DERO address or username"
 	}
 
 	amountStr := strings.TrimSpace(s.amountInput.Value())

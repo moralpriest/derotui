@@ -57,7 +57,7 @@ jobs:
           cache: true
 
       - name: Build binary
-        run: go build -trimpath -ldflags "-s -w" -o derotui ./cmd/
+        run: go build -trimpath -ldflags "-s -w -X github.com/deroproject/dero-wallet-cli/internal/ui.Version=0.1.1" -o derotui ./cmd/
 
   test:
     name: Test

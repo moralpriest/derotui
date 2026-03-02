@@ -166,6 +166,7 @@ internal/
 ### Payment ID / Destination Port
 - DERO HE uses `RPC_DESTINATION_PORT` (uint64) instead of legacy 64-char hex Payment IDs
 - Integrated addresses (`deroi...`) embed port and comment in arguments
+- Send form recipient accepts plain usernames (no `@`) and resolves them through daemon name service
 - **Send form**: Payment ID field validates as uint64 numeric (max 20 digits)
 - **Integrated address detection**: Auto-fills Payment ID and Message from address
 - **Visual indicator**: Shows "✓ (from address)" when port extracted from integrated address
