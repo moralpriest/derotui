@@ -189,6 +189,7 @@ jobs:
           name: derotui v${{ needs.verify.outputs.version }}
           prerelease: ${{ needs.verify.outputs.is_prerelease }}
           files: release/*
+          generate_release_notes: true
           body: |
             Release v${{ needs.verify.outputs.version }}
 
