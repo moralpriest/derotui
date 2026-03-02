@@ -69,7 +69,12 @@ curl -fsSL "${BASE_URL}/${CHECKSUMS}" -o "${TMP_DIR}/${CHECKSUMS}"
 
 (
   cd "$TMP_DIR"
-  grep "  ${ASSET}$" "$CHECKSUMS" | sha256sum -c -
+  CHECK_LINE="$(grep -E "(\./)?${ASSET}$" "$CHECKSUMS" | head -n1 || true)"
+  if [ -z "$CHECK_LINE" ]; then
+    echo "error: checksum entry not found for ${ASSET} in ${CHECKSUMS}" >&2
+    exit 1
+  fi
+  printf '%s\n' "$CHECK_LINE" | sed 's#  \./#  #' | sha256sum -c -
 )
 
 chmod +x "${TMP_DIR}/${ASSET}"
