@@ -97,9 +97,9 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		nextTestnet := false
 		nextSimulator := false
 		switch network {
-		case "Mainnet":
-			nextTestnet = true
 		case "Testnet":
+			nextTestnet = true
+		case "Simulator":
 			nextSimulator = true
 		}
 

@@ -43,6 +43,17 @@ type Command struct {
 	Action      WelcomeAction
 }
 
+// DaemonStatusInfo represents one daemon status row on welcome page.
+type DaemonStatusInfo struct {
+	IsOnline    bool
+	IsSynced    bool
+	IsHealthy   bool
+	Network     string
+	Address     string
+	BlockHeight uint64
+	TopoHeight  int64
+}
+
 // WelcomeModel represents the welcome screen
 type WelcomeModel struct {
 	input           textinput.Model
@@ -66,6 +77,7 @@ type WelcomeModel struct {
 	DaemonAddress   string
 	BlockHeight     uint64
 	TopoHeight      int64
+	Daemons         []DaemonStatusInfo
 	Version         string
 	errorMsg        string // Error message to display
 	successMsg      string // Success message to display
@@ -371,56 +383,22 @@ func (w WelcomeModel) View() string {
 	logo := styles.Logo()
 	subtitle := styles.MutedStyle.Render("Private. Secure. Decentralized.")
 
-	networkLabel := w.Network
-	if networkLabel == "" {
-		networkLabel = "Mainnet"
-	}
-	var networkStyled string
-	switch networkLabel {
-	case "Simulator":
-		networkStyled = styles.SimulatorStyle.Render(networkLabel)
-	case "Testnet":
-		networkStyled = styles.TestnetStyle.Render(networkLabel)
-	default:
-		networkStyled = styles.SuccessStyle.Render(networkLabel)
-	}
-
-	addressLabel := "Not configured"
-	if w.DaemonAddress != "" {
-		addressLabel = truncateWelcomeAddress(w.DaemonAddress, 16)
-	}
-
-	var statusStyled string
-	if w.IsOnline && w.IsHealthy {
-		if w.IsSynced {
-			statusStyled = styles.SuccessStyle.Render("●")
-		} else {
-			statusStyled = styles.WarningStyle.Render("●")
+	metaRows := []string{}
+	if len(w.Daemons) > 0 {
+		for _, daemon := range w.Daemons {
+			metaRows = append(metaRows, renderDaemonSummaryLine(daemon))
 		}
-	} else if w.IsOnline && !w.IsHealthy {
-		statusStyled = styles.WarningStyle.Render("●")
 	} else {
-		statusStyled = styles.ErrorStyle.Render("●")
+		metaRows = append(metaRows, renderDaemonSummaryLine(DaemonStatusInfo{
+			IsOnline:    w.IsOnline,
+			IsSynced:    w.IsSynced,
+			IsHealthy:   w.IsHealthy,
+			Network:     w.Network,
+			Address:     w.DaemonAddress,
+			BlockHeight: w.BlockHeight,
+			TopoHeight:  w.TopoHeight,
+		}))
 	}
-
-	blockStyled := styles.MutedStyle.Render("-")
-	if w.BlockHeight > 0 {
-		blockStr := formatBlockHeight(w.BlockHeight)
-		if w.IsOnline && w.IsHealthy && w.IsSynced {
-			blockStyled = styles.SuccessStyle.Render(blockStr)
-		} else if w.IsOnline {
-			blockStyled = styles.WarningStyle.Render(blockStr)
-		} else {
-			blockStyled = styles.MutedStyle.Render(blockStr)
-		}
-	}
-
-	summaryLine := styles.MutedStyle.Render("Network:") + networkStyled +
-		" " + statusStyled +
-		"   " + styles.MutedStyle.Render("Daemon:") + styles.TextStyle.Render(addressLabel) +
-		"   " + styles.MutedStyle.Render("Height:") + blockStyled
-
-	metaRows := []string{summaryLine}
 
 	metaStrip := lipgloss.JoinVertical(lipgloss.Center, metaRows...)
 
@@ -655,6 +633,57 @@ func (w WelcomeModel) View() string {
 	return strings.Join(allLines, "\n")
 }
 
+func renderDaemonSummaryLine(daemon DaemonStatusInfo) string {
+	networkLabel := daemon.Network
+	if networkLabel == "" {
+		networkLabel = "Mainnet"
+	}
+	var networkStyled string
+	switch networkLabel {
+	case "Simulator":
+		networkStyled = styles.SimulatorStyle.Render(networkLabel)
+	case "Testnet":
+		networkStyled = styles.TestnetStyle.Render(networkLabel)
+	default:
+		networkStyled = styles.SuccessStyle.Render(networkLabel)
+	}
+
+	addressLabel := "Not configured"
+	if daemon.Address != "" {
+		addressLabel = truncateWelcomeAddress(daemon.Address, 16)
+	}
+
+	var statusStyled string
+	if daemon.IsOnline && daemon.IsHealthy {
+		if daemon.IsSynced {
+			statusStyled = styles.SuccessStyle.Render("●")
+		} else {
+			statusStyled = styles.WarningStyle.Render("●")
+		}
+	} else if daemon.IsOnline && !daemon.IsHealthy {
+		statusStyled = styles.WarningStyle.Render("●")
+	} else {
+		statusStyled = styles.ErrorStyle.Render("●")
+	}
+
+	blockStyled := styles.MutedStyle.Render("-")
+	if daemon.BlockHeight > 0 {
+		blockStr := formatBlockHeight(daemon.BlockHeight)
+		if daemon.IsOnline && daemon.IsHealthy && daemon.IsSynced {
+			blockStyled = styles.SuccessStyle.Render(blockStr)
+		} else if daemon.IsOnline {
+			blockStyled = styles.WarningStyle.Render(blockStr)
+		} else {
+			blockStyled = styles.MutedStyle.Render(blockStr)
+		}
+	}
+
+	return styles.MutedStyle.Render("Network:") + networkStyled +
+		" " + statusStyled +
+		"   " + styles.MutedStyle.Render("Daemon:") + styles.TextStyle.Render(addressLabel) +
+		"   " + styles.MutedStyle.Render("Height:") + blockStyled
+}
+
 // Action returns the selected action
 func (w WelcomeModel) Action() WelcomeAction {
 	return w.action
@@ -682,6 +711,38 @@ func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isHealthy b
 	w.DaemonAddress = address
 	w.BlockHeight = blockHeight
 	w.TopoHeight = topoHeight
+	w.Daemons = []DaemonStatusInfo{{
+		IsOnline:    isOnline,
+		IsSynced:    isSynced,
+		IsHealthy:   isHealthy,
+		Network:     network,
+		Address:     address,
+		BlockHeight: blockHeight,
+		TopoHeight:  topoHeight,
+	}}
+}
+
+// SetDaemonStatuses sets one or more daemon status rows.
+func (w *WelcomeModel) SetDaemonStatuses(daemons []DaemonStatusInfo) {
+	w.Daemons = append([]DaemonStatusInfo(nil), daemons...)
+	if len(w.Daemons) == 0 {
+		w.IsOnline = false
+		w.IsSynced = false
+		w.IsHealthy = false
+		w.Network = ""
+		w.DaemonAddress = ""
+		w.BlockHeight = 0
+		w.TopoHeight = 0
+		return
+	}
+	primary := w.Daemons[0]
+	w.IsOnline = primary.IsOnline
+	w.IsSynced = primary.IsSynced
+	w.IsHealthy = primary.IsHealthy
+	w.Network = primary.Network
+	w.DaemonAddress = primary.Address
+	w.BlockHeight = primary.BlockHeight
+	w.TopoHeight = primary.TopoHeight
 }
 
 // SetError sets an error message to display on the welcome screen

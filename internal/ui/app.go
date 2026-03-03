@@ -192,6 +192,8 @@ type Model struct {
 	stickyDaemonAddress   string
 	stickyDaemonTestnet   bool
 	stickyDaemonSimulator bool
+	cliDaemonAddress      string
+	lastWalletDaemon      string
 
 	// Global debug console state (visible on all pages)
 	debugEnabled     bool
@@ -273,6 +275,7 @@ func applyFilePickerTheme(fp *filepicker.Model) {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
+	m.cliDaemonAddress = m.Opts.DaemonAddress
 	cmds := []tea.Cmd{
 		m.filePicker.Init(),
 		m.checkDaemonStatus(), // Check daemon on startup
@@ -302,52 +305,81 @@ func (m *Model) checkStartupWallet() tea.Cmd {
 // checkDaemonStatus returns a command that checks daemon status
 func (m *Model) checkDaemonStatus() tea.Cmd {
 	// Capture values now to avoid closure issues with pointer receiver
+	lastWalletDaemon := m.lastWalletDaemon
 	daemonAddr := m.Opts.DaemonAddress
 	testnet := m.Opts.Testnet
 	simulator := m.Opts.Simulator
-	implicitDaemon := daemonAddr == ""
 	return func() tea.Msg {
-		network := "Mainnet"
+		statusFor := func(address string, defaultNetwork string) daemonStatusEntry {
+			info := wallet.GetDaemonInfo(context.Background(), address)
+			network := defaultNetwork
+			if info.IsOnline {
+				if info.Network == "Simulator" {
+					network = "Simulator"
+				} else if info.Testnet {
+					network = "Testnet"
+				} else {
+					network = "Mainnet"
+				}
+			}
+			return daemonStatusEntry{
+				isOnline:   info.IsOnline,
+				isSynced:   info.IsSynced,
+				isHealthy:  info.IsHealthy,
+				network:    network,
+				address:    address,
+				height:     info.Height,
+				topoHeight: info.TopoHeight,
+			}
+		}
+
+		if lastWalletDaemon != "" {
+			entry := statusFor(lastWalletDaemon, "Mainnet")
+			return daemonStatusMsg{daemons: []daemonStatusEntry{entry}}
+		}
+
+		if daemonAddr != "" {
+			entry := statusFor(daemonAddr, "Mainnet")
+			return daemonStatusMsg{daemons: []daemonStatusEntry{entry}}
+		}
+
 		if simulator {
-			network = "Simulator"
-		} else if testnet {
-			network = "Testnet"
+			entry := statusFor(wallet.DefaultSimulatorDaemon, "Simulator")
+			return daemonStatusMsg{daemons: []daemonStatusEntry{entry}}
 		}
-		if daemonAddr == "" {
-			if simulator {
-				daemonAddr = wallet.DefaultSimulatorDaemon
-			} else if testnet {
-				daemonAddr = wallet.DefaultTestnetDaemon
-			} else {
-				daemonAddr = wallet.DefaultMainnetDaemon
+		if testnet {
+			entry := statusFor(wallet.DefaultTestnetDaemon, "Testnet")
+			return daemonStatusMsg{daemons: []daemonStatusEntry{entry}}
+		}
+
+		candidates := []struct {
+			address string
+			network string
+		}{
+			{wallet.DefaultMainnetDaemon, "Mainnet"},
+			{wallet.DefaultTestnetDaemon, "Testnet"},
+			{wallet.DefaultSimulatorDaemon, "Simulator"},
+		}
+
+		daemons := make([]daemonStatusEntry, 0, len(candidates))
+		for _, candidate := range candidates {
+			entry := statusFor(candidate.address, candidate.network)
+			if entry.isHealthy {
+				daemons = append(daemons, entry)
 			}
 		}
-		info := wallet.GetDaemonInfo(context.Background(), daemonAddr)
-		if implicitDaemon && !simulator && !testnet && !info.IsHealthy {
-			fallbackInfo := wallet.GetDaemonInfo(context.Background(), wallet.FallbackMainnetDaemon)
-			if fallbackInfo.IsHealthy {
-				daemonAddr = wallet.FallbackMainnetDaemon
-				info = fallbackInfo
-			}
+
+		if len(daemons) > 0 {
+			return daemonStatusMsg{daemons: daemons}
 		}
-		if info.IsOnline {
-			if info.Network == "Simulator" {
-				network = "Simulator"
-			} else if info.Testnet {
-				network = "Testnet"
-			} else {
-				network = "Mainnet"
-			}
+
+		fallback := statusFor(wallet.FallbackMainnetDaemon, "Mainnet")
+		if fallback.isHealthy {
+			return daemonStatusMsg{daemons: []daemonStatusEntry{fallback}}
 		}
-		return daemonStatusMsg{
-			isOnline:   info.IsOnline,
-			isSynced:   info.IsSynced,
-			isHealthy:  info.IsHealthy,
-			network:    network,
-			address:    daemonAddr,
-			height:     info.Height,
-			topoHeight: info.TopoHeight,
-		}
+
+		mainnetLocal := statusFor(wallet.DefaultMainnetDaemon, "Mainnet")
+		return daemonStatusMsg{daemons: []daemonStatusEntry{mainnetLocal}}
 	}
 }
 
@@ -436,12 +468,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Close wallet and go back to welcome
 				if m.wallet != nil {
+					m.lastWalletDaemon = m.wallet.GetDaemonAddress()
 					m.wallet.Close()
 					m.wallet = nil
 				}
 				// Clear app-level cached state (keep global daemon endpoint for switch detection)
 				m.cachedDaemonHealthy = false
 				m.cachedDaemonAddress = ""
+				m.Opts.DaemonAddress = m.cliDaemonAddress
 				m.regHintShown = false
 				m.clearPendingRegistration()
 				m.page = PageWelcome
@@ -555,17 +589,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.tickCmd())
 
 	case daemonStatusMsg:
-		// Update welcome screen with daemon status
-		m.welcome.SetDaemonStatus(msg.isOnline, msg.isSynced, msg.isHealthy, msg.network, msg.address, msg.height, msg.topoHeight)
-		// Cache daemon status for fast wallet connection
-		m.cachedDaemonHealthy = msg.isOnline && msg.isHealthy
-		m.cachedDaemonAddress = msg.address
-		// If daemon is online and healthy, save the address
-		if msg.isOnline && msg.isHealthy && m.Opts.DaemonAddress == "" {
-			m.Opts.DaemonAddress = msg.address
+		welcomeDaemons := make([]pages.DaemonStatusInfo, 0, len(msg.daemons))
+		for _, daemon := range msg.daemons {
+			welcomeDaemons = append(welcomeDaemons, pages.DaemonStatusInfo{
+				IsOnline:    daemon.isOnline,
+				IsSynced:    daemon.isSynced,
+				IsHealthy:   daemon.isHealthy,
+				Network:     daemon.network,
+				Address:     daemon.address,
+				BlockHeight: daemon.height,
+				TopoHeight:  daemon.topoHeight,
+			})
 		}
-		if m.stickyDaemonAddress != "" && msg.address == m.stickyDaemonAddress {
-			m.stickyDaemonHealthy = msg.isOnline && msg.isHealthy
+		m.welcome.SetDaemonStatuses(welcomeDaemons)
+
+		m.cachedDaemonHealthy = false
+		m.cachedDaemonAddress = ""
+		if len(msg.daemons) > 0 {
+			primary := msg.daemons[0]
+			m.cachedDaemonHealthy = primary.isOnline && primary.isHealthy
+			m.cachedDaemonAddress = primary.address
+		}
+		if m.stickyDaemonAddress != "" {
+			for _, daemon := range msg.daemons {
+				if daemon.address == m.stickyDaemonAddress {
+					m.stickyDaemonHealthy = daemon.isOnline && daemon.isHealthy
+					break
+				}
+			}
 		}
 
 	case daemonConnectMsg:
@@ -575,6 +626,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Success - update cached daemon address for display purposes only
 			// Do NOT modify m.Opts.Testnet/Simulator as those are CLI flags that
 			// should remain constant. Wallet network is determined by saved config.
+			m.lastWalletDaemon = ""
 			m.Opts.DaemonAddress = msg.address
 			m.cachedDaemonHealthy = true
 			m.cachedDaemonAddress = msg.address
@@ -629,6 +681,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			derolog.Error("wallet", "open.failed", "Failed to open wallet", "error", msg.err.Error())
 			m.password.SetError(msg.err.Error())
 		} else {
+			m.lastWalletDaemon = ""
 			network := "mainnet"
 			if msg.wallet.IsTestnet() {
 				network = "testnet"
@@ -678,6 +731,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.password.SetError(msg.err.Error())
 		} else {
+			m.lastWalletDaemon = ""
 			m.wallet = msg.wallet
 			m.regHintShown = false
 			m.clearPendingRegistration()
@@ -736,6 +790,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.seed.SetError(msg.err.Error())
 		} else {
+			m.lastWalletDaemon = ""
 			m.wallet = msg.wallet
 			m.regHintShown = false
 			m.clearPendingRegistration()
@@ -858,17 +913,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonRetryAfter = initialDaemonRetryInterval
 			m.updateWalletInfo() // Refresh balance/status now that we're connected
 			// Update daemon address to match what wallet connected to
-			// This ensures welcome screen shows correct daemon when wallet is closed
 			if msg.daemonAddress != "" {
-				m.Opts.DaemonAddress = msg.daemonAddress
 				m.cachedDaemonAddress = msg.daemonAddress
 				m.cachedDaemonHealthy = true
-				if m.stickyDaemonAddress != "" {
-					m.stickyDaemonAddress = msg.daemonAddress
-					m.stickyDaemonHealthy = true
-					m.stickyDaemonTestnet = msg.network == config.NetworkTestnet
-					m.stickyDaemonSimulator = msg.network == config.NetworkSimulator
-				}
 			}
 			// Keep global debug state stable across page transitions.
 			// Only sync dashboard indicator from current global state.

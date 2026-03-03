@@ -248,11 +248,6 @@ func (m *Model) PreFlightNetworkCheck(file string) bool {
 		return true
 	}
 
-	// If user explicitly selected a daemon via /connect, that network is authoritative
-	if m.stickyDaemonAddress != "" {
-		return true
-	}
-
 	// Check saved network
 	savedNetwork := config.GetWalletNetwork(file)
 	return savedNetwork != ""
@@ -469,24 +464,7 @@ func (m *Model) changeWalletPassword(currentPass, newPass string) tea.Cmd {
 
 // connectWalletToDaemonAsync connects the wallet to daemon asynchronously.
 func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
-	// Capture values to avoid race conditions.
-	// Only use sticky daemon as an explicit override selected by user (/connect).
-	// Do not force the welcome page cached daemon here, because it may be a
-	// different network than the wallet being opened.
 	w := m.wallet
-	knownHealthy := false
-	knownAddress := ""
-	if m.stickyDaemonAddress != "" {
-		knownHealthy = m.stickyDaemonHealthy
-		knownAddress = m.stickyDaemonAddress
-	} else if m.Opts.DaemonAddress != "" {
-		// If we already have a daemon endpoint selected (CLI/autodetect/fallback),
-		// prefer it to avoid retrying localhost first.
-		knownAddress = m.Opts.DaemonAddress
-		if info := wallet.GetDaemonInfo(context.Background(), knownAddress); info.IsHealthy {
-			knownHealthy = true
-		}
-	}
 	return func() tea.Msg {
 		if w == nil {
 			return walletDaemonConnectedMsg{connected: false, err: "Wallet not open"}
@@ -503,7 +481,7 @@ func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
 		}
 		resultCh := make(chan connectResult, 1)
 		go func() {
-			connected, errMsg := w.ConnectToLocalDaemonFast(knownHealthy, knownAddress)
+			connected, errMsg := w.ConnectToLocalDaemonFast(false, "")
 			resultCh <- connectResult{connected: connected, errMsg: errMsg}
 		}()
 
@@ -559,7 +537,7 @@ func (m *Model) getCreateRestoreNetwork() (testnet bool, simulator bool) {
 }
 
 // getEffectiveNetwork returns the effective network for wallet operations.
-// Priority: CLI flags (explicit) > saved wallet config > current daemon > prompt user
+// Priority: CLI flags (explicit) > saved wallet config.
 // IMPORTANT: Never silently fall back to m.Opts.Testnet unless explicitly passed via CLI.
 func (m *Model) getEffectiveNetwork(file string) (testnet, simulator bool) {
 	// 1) Explicit CLI flags have highest priority
@@ -583,14 +561,7 @@ func (m *Model) getEffectiveNetwork(file string) (testnet, simulator bool) {
 		}
 	}
 
-	// 3) Current daemon (what welcome shows) - only if healthy
-	if m.cachedDaemonAddress != "" {
-		if info := wallet.GetDaemonInfo(context.Background(), m.cachedDaemonAddress); info.IsHealthy {
-			return info.Testnet, info.Network == "Simulator"
-		}
-	}
-
-	// 4) No network known - return mainnet as safe default (user will be prompted if needed)
+	// 3) No network known - return mainnet as safe default (user will be prompted if needed)
 	// NEVER return m.Opts.Testnet here as that can carry stale state
 	return false, false
 }

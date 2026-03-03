@@ -14,8 +14,7 @@ const registrationConfirmTimeoutBlocks uint64 = 20
 // tickMsg is sent periodically for updates.
 type tickMsg time.Time
 
-// daemonStatusMsg carries daemon status info.
-type daemonStatusMsg struct {
+type daemonStatusEntry struct {
 	isOnline   bool
 	isSynced   bool
 	isHealthy  bool
@@ -23,6 +22,11 @@ type daemonStatusMsg struct {
 	address    string
 	height     uint64
 	topoHeight int64
+}
+
+// daemonStatusMsg carries daemon status info.
+type daemonStatusMsg struct {
+	daemons []daemonStatusEntry
 }
 
 // startupCheckMsg carries the last wallet path if found.

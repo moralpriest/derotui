@@ -294,17 +294,7 @@ func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 		return nil, fmt.Errorf("failed to open wallet: %w", err)
 	}
 
-	// Keep the requested network authoritative. Only log if address prefix looks unexpected.
-	address := w.GetAddress().String()
-	detectedTestnet := strings.HasPrefix(address, "deto1")
 	actualTestnet := testnet
-	if !simulator {
-		if testnet && !detectedTestnet {
-			log.Warn("wallet", "open.network_mismatch", "Wallet address looks mainnet while testnet was requested")
-		} else if !testnet && detectedTestnet {
-			log.Warn("wallet", "open.network_mismatch", "Wallet address looks testnet while mainnet was requested")
-		}
-	}
 	actualSimulator := simulator
 
 	// Determine network name
@@ -325,8 +315,7 @@ func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 	log.Debug("wallet", "open.network_set", "Network globals initialized",
 		"testnet", fmt.Sprintf("%t", actualTestnet),
 		"simulator", fmt.Sprintf("%t", actualSimulator),
-		"network", network,
-		"address_prefix", address[:8])
+		"network", network)
 
 	wallet := &Wallet{
 		wallet:    w,
