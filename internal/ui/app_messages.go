@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/deroproject/dero-wallet-cli/internal/config"
+	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
+	"github.com/deroproject/dero-wallet-cli/internal/services/installer"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 )
 
@@ -15,13 +17,13 @@ const registrationConfirmTimeoutBlocks uint64 = 20
 type tickMsg time.Time
 
 type daemonStatusEntry struct {
-	isOnline   bool
-	isSynced   bool
-	isHealthy  bool
-	network    string
-	address    string
-	height     uint64
-	topoHeight int64
+	isOnline        bool
+	isSynced        bool
+	isBootstrapping bool
+	isHealthy       bool
+	network         string
+	address         string
+	height          uint64
 }
 
 // daemonStatusMsg carries daemon status info.
@@ -96,4 +98,49 @@ type walletDaemonConnectedMsg struct {
 type networkRequiredMsg struct {
 	file     string
 	password string
+}
+
+type daemonManagerMsg struct {
+	snapshot daemonservice.Snapshot
+	logs     []string
+	info     wallet.DaemonInfo
+	err      string
+	source   string
+}
+
+type daemonInstallPreviewMsg struct {
+	plan installer.Plan
+	err  string
+}
+
+type daemonSessionPreviewMsg struct {
+	plan installer.Plan
+	err  string
+}
+
+type daemonInstallDownloadMsg struct {
+	err    string
+	target string
+	plan   installer.Plan
+}
+
+type daemonInstallApplyMsg struct {
+	err string
+}
+
+type daemonInstallApplySudoMsg struct {
+	err string
+}
+
+type minerControlMsg struct {
+	err string
+}
+
+type minerStatsMsg struct {
+	running  bool
+	hashrate uint64
+	blocks   uint64
+	threads  int
+	address  string
+	status   string
 }

@@ -1,0 +1,430 @@
+// Copyright 2017-2026 DERO Project. All rights reserved.
+
+package pages
+
+import (
+	"fmt"
+	"image/color"
+	"strings"
+
+	"charm.land/bubbles/v2/key"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+
+	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
+)
+
+var (
+	daemonStartKeys   = key.NewBinding(key.WithKeys("s"))
+	daemonStopKeys    = key.NewBinding(key.WithKeys("x"))
+	daemonRestartKeys = key.NewBinding(key.WithKeys("r"))
+	daemonLogsKeys    = key.NewBinding(key.WithKeys("l"))
+	daemonInstallKeys = key.NewBinding(key.WithKeys("i"))
+	daemonConfigKeys  = key.NewBinding(key.WithKeys("c"))
+)
+
+type DaemonStatusSnapshot struct {
+	Running               bool
+	Managed               bool
+	BinaryReady           bool
+	Source                string
+	PID                   int
+	Network               string
+	BinaryPath            string
+	DataDir               string
+	RPCBind               string
+	P2PBind               string
+	IntegratorAddress     string
+	LastError             string
+	IsOnline              bool
+	IsHealthy             bool
+	IsSynced              bool
+	IsBootstrapping       bool
+	IsFinalizingBootstrap bool
+	BlockHeight           uint64
+	StableHeight          int64
+	TopoHeight            int64
+	PeerHeight            int64
+	SyncProgress          float64
+	Version               string
+	Difficulty            uint64
+	AvgBlockTime          float32
+	IncomingPeers         uint64
+	OutgoingPeers         uint64
+	KnownPeers            uint64
+	Uptime                uint64
+	TxPoolSize            uint64
+	Hashrate1hr           uint64
+	Hashrate1d            uint64
+}
+
+type DaemonStatusModel struct {
+	Snapshot      DaemonStatusSnapshot
+	Downloading   bool
+	DownloadError string
+	InstallResult string
+	wantStart     bool
+	wantStop      bool
+	wantRestart   bool
+	wantLogs      bool
+	wantSettings  bool
+	wantInstall   bool
+	cancelled     bool
+	width         int
+	height        int
+}
+
+func NewDaemonStatus() DaemonStatusModel  { return DaemonStatusModel{} }
+func (d DaemonStatusModel) Init() tea.Cmd { return nil }
+
+func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		d.DownloadError = ""
+		d.InstallResult = ""
+		switch {
+		case key.Matches(msg, pageEscKeys):
+			d.cancelled = true
+		case key.Matches(msg, daemonStartKeys):
+			d.wantStart = true
+		case key.Matches(msg, daemonStopKeys):
+			d.wantStop = true
+		case key.Matches(msg, daemonRestartKeys):
+			d.wantRestart = true
+		case key.Matches(msg, daemonLogsKeys):
+			d.wantLogs = true
+		case key.Matches(msg, daemonInstallKeys):
+			d.wantInstall = true
+		case key.Matches(msg, daemonConfigKeys):
+			d.wantSettings = true
+		}
+	case tea.WindowSizeMsg:
+		d.width = msg.Width
+		d.height = msg.Height
+	}
+	return d, nil
+}
+
+func (d DaemonStatusModel) View() string {
+	const contentWidth = 70
+	const labelWidth = 12
+
+	padLabel := func(label string) string {
+		for len(label) < labelWidth {
+			label += " "
+		}
+		return label
+	}
+
+	sectionHeader := func(title string, clr color.Color) string {
+		prefix := "── "
+		suffix := " "
+		lineLen := contentWidth - len(prefix) - len(title) - len(suffix)
+		if lineLen < 0 {
+			lineLen = 0
+		}
+		return styles.MutedStyle.Render(prefix) +
+			lipgloss.NewStyle().Foreground(clr).Bold(true).Render(title+suffix) +
+			styles.MutedStyle.Render(styles.Separator(lineLen))
+	}
+
+	row := func(label, value string) string {
+		return styles.MutedStyle.Render(padLabel(label)) + value
+	}
+
+	rows := []string{
+		sectionHeader("Status", styles.ColorSuccess),
+		row("State:", d.renderStateLine()),
+	}
+	if d.Snapshot.Version != "" {
+		rows = append(rows, row("Version:", styles.TextStyle.Render(d.Snapshot.Version)))
+	}
+	rows = append(rows, row("RPC:", d.renderRPCLine()))
+	rows = append(rows, row("Network:", d.renderMetaLine()))
+	rows = append(rows, row("Block:", d.renderHeightLine()))
+	if d.Snapshot.Uptime > 0 {
+		rows = append(rows, row("Uptime:", styles.TextStyle.Render(formatUptime(d.Snapshot.Uptime))))
+	}
+
+	if d.Downloading {
+		rows = append(rows, "", styles.WarningStyle.Render("  Downloading derod..."))
+	} else if d.Snapshot.Running && !d.Snapshot.IsOnline && d.Snapshot.BlockHeight == 0 {
+		rows = append(rows, "", styles.MutedStyle.Render("  Waiting for RPC..."))
+	}
+	if d.DownloadError != "" {
+		rows = append(rows, "", styles.ErrorStyle.Render("  ✗ "+d.DownloadError))
+	}
+	if d.InstallResult != "" {
+		rows = append(rows, "", styles.SuccessStyle.Render("  ✓ "+d.InstallResult))
+	}
+	if d.Snapshot.LastError != "" && !d.Downloading {
+		rows = append(rows, "", styles.ErrorStyle.Render("  ✗ "+d.Snapshot.LastError))
+	}
+
+	rows = append(rows, "", sectionHeader("Network", styles.ColorPrimary))
+	rows = append(rows, row("Peers:", d.renderPeersLine()))
+	if d.Snapshot.Difficulty > 0 {
+		rows = append(rows, row("Difficulty:", styles.TextStyle.Render(formatUint64(d.Snapshot.Difficulty))))
+	}
+	if d.Snapshot.AvgBlockTime > 0 {
+		rows = append(rows, row("Block Time:", styles.TextStyle.Render(fmt.Sprintf("~%.0fs", d.Snapshot.AvgBlockTime))))
+	}
+	if d.Snapshot.TxPoolSize > 0 {
+		rows = append(rows, row("Tx Pool:", styles.TextStyle.Render(fmt.Sprintf("%d pending", d.Snapshot.TxPoolSize))))
+	}
+	if d.Snapshot.Hashrate1hr > 0 || d.Snapshot.Hashrate1d > 0 {
+		rows = append(rows, row("Hashrate:", d.renderHashrateLine()))
+	}
+
+	rows = append(rows, "", sectionHeader("Configuration", styles.ColorAccent))
+	if strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded") {
+		rows = append(rows,
+			row("Mode:", styles.SuccessStyle.Render("Embedded Helper")),
+			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
+			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
+			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
+			row("Integrator:", truncatePlain(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
+		)
+	} else {
+		rows = append(rows,
+			row("Binary:", truncatePlain(d.fallback(d.Snapshot.BinaryPath), contentWidth-labelWidth-1)),
+			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
+			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
+			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
+			row("Integrator:", truncatePlain(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
+		)
+	}
+
+	rows = append(rows, "", d.renderFooter())
+
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+func (d DaemonStatusModel) renderFooter() string {
+	k := styles.AccentStyle.Render
+	m := styles.MutedStyle.Render
+	sep := m(" • ")
+
+	parts := []string{}
+	isEmbedded := strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded")
+
+	if !d.Downloading && !d.Snapshot.Running && !d.Snapshot.Managed {
+		label := "Start"
+		if !isEmbedded && !d.Snapshot.BinaryReady {
+			label = "Download"
+		}
+		parts = append(parts, k("S")+" "+m(label))
+	} else {
+		parts = append(parts, k("X")+" "+m("Stop"))
+	}
+
+	if d.Snapshot.Running || d.Snapshot.Managed {
+		parts = append(parts, k("R")+" "+m("Restart"))
+		parts = append(parts, k("L")+" "+m("Logs"))
+	}
+
+	if !isEmbedded {
+		parts = append(parts, k("I")+" "+m("Install"))
+	}
+	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
+
+	return strings.Join(parts, sep)
+}
+
+func (d DaemonStatusModel) renderStateLine() string {
+	if d.Downloading {
+		return styles.WarningStyle.Render("Downloading")
+	}
+	if d.Snapshot.IsOnline && d.Snapshot.IsHealthy {
+		if d.Snapshot.BlockHeight == 0 && d.Snapshot.PeerHeight == 0 && d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 {
+			return styles.WarningStyle.Render("Waiting for peers")
+		}
+		if d.Snapshot.IsFinalizingBootstrap {
+			return styles.WarningStyle.Render("Finalizing Bootstrap...")
+		}
+		if d.Snapshot.IsBootstrapping {
+			pct := fmt.Sprintf("%.1f%%", d.Snapshot.SyncProgress)
+			return styles.WarningStyle.Render("Bootstrapping " + pct)
+		}
+		if d.Snapshot.IsSynced {
+			return styles.SuccessStyle.Render("Synced")
+		}
+		if d.Snapshot.SyncProgress > 0 {
+			pct := fmt.Sprintf("%.1f%%", d.Snapshot.SyncProgress)
+			return styles.WarningStyle.Render("Syncing " + pct)
+		}
+		return styles.WarningStyle.Render("Syncing")
+	}
+	if d.Snapshot.Running {
+		return styles.WarningStyle.Render("Starting")
+	}
+	if d.Snapshot.Source == "Planned Local" && !d.Snapshot.BinaryReady && strings.TrimSpace(d.Snapshot.BinaryPath) == "" {
+		return styles.WarningStyle.Render("Not configured")
+	}
+	return styles.ErrorStyle.Render("Stopped")
+}
+
+func (d DaemonStatusModel) renderRPCLine() string {
+	if d.Snapshot.IsOnline && d.Snapshot.IsHealthy {
+		if d.Snapshot.BlockHeight == 0 && d.Snapshot.PeerHeight == 0 && d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 {
+			return styles.WarningStyle.Render("No peers yet")
+		}
+		if d.Snapshot.IsFinalizingBootstrap {
+			return styles.WarningStyle.Render("Finalizing Bootstrap...")
+		}
+		if d.Snapshot.IsBootstrapping {
+			pct := fmt.Sprintf("%.1f%%", d.Snapshot.SyncProgress)
+			return styles.WarningStyle.Render("Bootstrapping " + pct)
+		}
+		if d.Snapshot.IsSynced {
+			return styles.SuccessStyle.Render("Healthy")
+		}
+		return styles.WarningStyle.Render("Syncing")
+	}
+	return styles.ErrorStyle.Render("Unreachable")
+}
+
+func (d DaemonStatusModel) renderMetaLine() string {
+	parts := []string{d.renderNetwork()}
+	mode := strings.TrimSpace(d.Snapshot.Source)
+	if mode != "" {
+		parts = append(parts, styles.MutedStyle.Render(mode))
+	}
+	if d.Snapshot.PID > 0 {
+		parts = append(parts, styles.MutedStyle.Render(fmt.Sprintf("PID %d", d.Snapshot.PID)))
+	}
+	return strings.Join(parts, styles.MutedStyle.Render("  •  "))
+}
+
+func (d DaemonStatusModel) renderHeightLine() string {
+	if d.Snapshot.BlockHeight == 0 {
+		if d.Snapshot.PeerHeight > 0 {
+			return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(fmt.Sprintf("%d", d.Snapshot.PeerHeight))
+		}
+		return styles.MutedStyle.Render("-")
+	}
+
+	heightStr := formatUint64(d.Snapshot.BlockHeight)
+
+	if !d.Snapshot.IsSynced && d.Snapshot.StableHeight > 0 && d.Snapshot.StableHeight < int64(d.Snapshot.BlockHeight) {
+		heightStr += styles.MutedStyle.Render("  •  Confirmed ") + styles.TextStyle.Render(fmt.Sprintf("%d", d.Snapshot.StableHeight))
+	}
+
+	return heightStr
+}
+
+func (d DaemonStatusModel) renderPeersLine() string {
+	if d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 && d.Snapshot.KnownPeers == 0 {
+		return styles.MutedStyle.Render("-")
+	}
+	parts := []string{}
+	if d.Snapshot.IncomingPeers > 0 || d.Snapshot.OutgoingPeers > 0 {
+		parts = append(parts, styles.TextStyle.Render(fmt.Sprintf("%d in", d.Snapshot.IncomingPeers))+
+			styles.MutedStyle.Render(" / ")+
+			styles.TextStyle.Render(fmt.Sprintf("%d out", d.Snapshot.OutgoingPeers)))
+	}
+	if d.Snapshot.KnownPeers > 0 {
+		parts = append(parts, styles.TextStyle.Render(formatUint64(d.Snapshot.KnownPeers))+
+			styles.MutedStyle.Render(" known"))
+	}
+	return strings.Join(parts, styles.MutedStyle.Render("  •  "))
+}
+
+func (d DaemonStatusModel) renderHashrateLine() string {
+	parts := []string{}
+	if d.Snapshot.Hashrate1hr > 0 {
+		parts = append(parts, styles.TextStyle.Render(formatHashrate(d.Snapshot.Hashrate1hr))+
+			styles.MutedStyle.Render(" (1h)"))
+	}
+	if d.Snapshot.Hashrate1d > 0 {
+		parts = append(parts, styles.TextStyle.Render(formatHashrate(d.Snapshot.Hashrate1d))+
+			styles.MutedStyle.Render(" (1d)"))
+	}
+	if len(parts) == 0 {
+		return styles.MutedStyle.Render("-")
+	}
+	return strings.Join(parts, styles.MutedStyle.Render("  •  "))
+}
+
+func (d DaemonStatusModel) renderNetwork() string {
+	network := strings.TrimSpace(d.Snapshot.Network)
+	if network == "" {
+		return styles.MutedStyle.Render("Not configured")
+	}
+	if strings.EqualFold(network, "testnet") {
+		return styles.TestnetStyle.Render(network)
+	}
+	if strings.EqualFold(network, "simulator") {
+		return styles.SimulatorStyle.Render(network)
+	}
+	return styles.SuccessStyle.Render("Mainnet")
+}
+
+func (d DaemonStatusModel) fallback(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "Not configured"
+	}
+	return v
+}
+
+func formatUptime(seconds uint64) string {
+	days := seconds / 86400
+	seconds %= 86400
+	hours := seconds / 3600
+	seconds %= 3600
+	mins := seconds / 60
+
+	if days > 0 {
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	}
+	if hours > 0 {
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
+}
+
+func formatUint64(n uint64) string {
+	s := fmt.Sprintf("%d", n)
+	if len(s) <= 3 {
+		return s
+	}
+	var result strings.Builder
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result.WriteByte(',')
+		}
+		result.WriteRune(c)
+	}
+	return result.String()
+}
+
+func formatHashrate(h uint64) string {
+	switch {
+	case h >= 1_000_000_000:
+		return fmt.Sprintf("%.1f GH/s", float64(h)/1_000_000_000)
+	case h >= 1_000_000:
+		return fmt.Sprintf("%.1f MH/s", float64(h)/1_000_000)
+	case h >= 1_000:
+		return fmt.Sprintf("%.1f kH/s", float64(h)/1_000)
+	default:
+		return fmt.Sprintf("%d H/s", h)
+	}
+}
+
+func (d *DaemonStatusModel) SetSnapshot(snapshot DaemonStatusSnapshot) { d.Snapshot = snapshot }
+func (d DaemonStatusModel) WantStart() bool                            { return d.wantStart }
+func (d DaemonStatusModel) WantStop() bool                             { return d.wantStop }
+func (d DaemonStatusModel) WantRestart() bool                          { return d.wantRestart }
+func (d DaemonStatusModel) WantLogs() bool                             { return d.wantLogs }
+func (d DaemonStatusModel) WantSettings() bool                         { return d.wantSettings }
+func (d DaemonStatusModel) WantInstall() bool                          { return d.wantInstall }
+func (d DaemonStatusModel) Cancelled() bool                            { return d.cancelled }
+func (d *DaemonStatusModel) ResetActions() {
+	d.wantStart = false
+	d.wantStop = false
+	d.wantRestart = false
+	d.wantLogs = false
+	d.wantSettings = false
+	d.wantInstall = false
+	d.cancelled = false
+}

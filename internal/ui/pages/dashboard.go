@@ -36,19 +36,20 @@ type DashboardModel struct {
 	LockedBalance uint64
 
 	// Wallet info (for header section)
-	WalletName    string
-	Network       string
-	IsOnline      bool
-	IsSynced      bool
-	IsRegistered  bool
-	IsRegistering bool
-	RegPending    bool
-	RegTxID       string
-	RegStatus     string
-	IsConnecting  bool // true while async daemon connection is in progress
-	DaemonAddress string
-	Height        uint64
-	DaemonHeight  uint64
+	WalletName      string
+	Network         string
+	IsOnline        bool
+	IsSynced        bool
+	IsBootstrapping bool
+	IsRegistered    bool
+	IsRegistering   bool
+	RegPending      bool
+	RegTxID         string
+	RegStatus       string
+	IsConnecting    bool // true while async daemon connection is in progress
+	DaemonAddress   string
+	Height          uint64
+	DaemonHeight    uint64
 
 	// Display
 	Address   string
@@ -317,6 +318,9 @@ func (d DashboardModel) View() string {
 		} else if !d.IsRegistered {
 			statusLabel = "UNREGISTERED"
 			statusStyle = styles.ErrorStyle
+		} else if d.IsBootstrapping {
+			statusLabel = "BOOTSTRAPPING"
+			statusStyle = styles.WarningStyle
 		} else if d.IsSynced {
 			statusLabel = "SYNCED"
 			statusStyle = styles.SuccessStyle
@@ -706,6 +710,10 @@ func (d *DashboardModel) SetWalletInfo(name, network string, isOnline, isSynced,
 
 	// Update paginator to reflect correct number of pages based on registration status
 	d.paginator.SetTotalPages(len(d.getPages()))
+}
+
+func (d *DashboardModel) SetDaemonBootstrapping(v bool) {
+	d.IsBootstrapping = v
 }
 
 // SetRegistering sets the registration in-progress state.

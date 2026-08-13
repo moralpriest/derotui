@@ -20,6 +20,7 @@ import (
 	"github.com/deroproject/derohe/walletapi"
 
 	"github.com/deroproject/dero-wallet-cli/internal/config"
+	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
 	"github.com/deroproject/dero-wallet-cli/internal/ui"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
@@ -33,6 +34,14 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "daemon-helper" {
+		if err := daemonservice.RunHelper(); err != nil {
+			fmt.Printf("daemon-helper error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Suppress DERO library console output to prevent TUI corruption
 	// The library writes directly to stdout which breaks the Bubble Tea TUI
 	globals.InitializeLog(io.Discard, io.Discard)
@@ -56,8 +65,18 @@ func main() {
 		detectAndPromptDaemon(&opts)
 	}
 
+	if opts.DaemonOnly {
+		if err := runHeadlessEmbeddedDaemon(opts); err != nil {
+			fmt.Printf("Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// Auto-open last wallet if it matches the selected/detected network
 	checkLastWallet(&opts)
+
+	var embeddedRPCAddr string
 
 	// Initialize globals.Arguments map with required keys for globals.Initialize()
 	globals.Arguments = map[string]interface{}{}
@@ -86,6 +105,9 @@ func main() {
 
 	// Set daemon address - use CLI option or default to localhost
 	daemonAddr := opts.DaemonAddress
+	if daemonAddr == "" && embeddedRPCAddr != "" {
+		daemonAddr = embeddedRPCAddr
+	}
 	if daemonAddr == "" {
 		if opts.Simulator {
 			daemonAddr = wallet.DefaultSimulatorDaemon
@@ -184,6 +206,7 @@ func parseFlags() ui.CLIOptions {
 	flag.StringVar(&opts.ElectrumSeed, "electrum-seed", "", "Seed for wallet recovery")
 	flag.BoolVar(&opts.Unlocked, "unlocked", false, "Keep wallet unlocked")
 	flag.BoolVar(&opts.Debug, "debug", false, "Enable debug logging")
+	flag.BoolVar(&opts.DaemonOnly, "daemon", false, "Run embedded daemon without TUI")
 
 	flag.Parse()
 
@@ -217,6 +240,89 @@ func parseFlags() ui.CLIOptions {
 	}
 
 	return opts
+}
+
+func daemonNetworkFromOpts(opts ui.CLIOptions) string {
+	if opts.Simulator {
+		return string(config.NetworkSimulator)
+	}
+	if opts.Testnet {
+		return string(config.NetworkTestnet)
+	}
+	return string(config.NetworkMainnet)
+}
+
+func configuredDaemonSettings(opts ui.CLIOptions) config.DaemonSettings {
+	settings := config.GetDaemonSettings()
+	settings.Network = daemonNetworkFromOpts(opts)
+	defaults := config.DefaultDaemonSettingsForNetwork(settings.Network)
+
+	if strings.TrimSpace(settings.RPCBind) == "" {
+		settings.RPCBind = defaults.RPCBind
+	}
+	if strings.TrimSpace(settings.P2PBind) == "" {
+		settings.P2PBind = defaults.P2PBind
+	}
+	if strings.TrimSpace(settings.GetWorkBind) == "" {
+		settings.GetWorkBind = defaults.GetWorkBind
+	}
+	if strings.TrimSpace(settings.DataDir) == "" {
+		settings.DataDir = defaults.DataDir
+	}
+
+	return settings
+}
+
+func shouldUseExistingLocalDaemon(settings config.DaemonSettings) bool {
+	rpcAddr := strings.TrimSpace(settings.RPCBind)
+	if rpcAddr == "" {
+		return false
+	}
+	if !wallet.IsDaemonHealthy(context.Background(), rpcAddr) {
+		return false
+	}
+	return daemonservice.FindPIDByAddress(rpcAddr) > 0
+}
+
+func startEmbeddedDaemonIfNeeded(opts ui.CLIOptions) (*daemonservice.EmbeddedDaemon, string, error) {
+	if opts.Offline {
+		return nil, "", nil
+	}
+
+	settings := configuredDaemonSettings(opts)
+	if settings.Mode == "external" {
+		return nil, "", nil
+	}
+	if shouldUseExistingLocalDaemon(settings) {
+		return nil, settings.RPCBind, nil
+	}
+
+	return nil, settings.RPCBind, nil
+}
+
+func runHeadlessEmbeddedDaemon(opts ui.CLIOptions) error {
+	settings := configuredDaemonSettings(opts)
+	if settings.Mode == "external" {
+		return fmt.Errorf("headless daemon mode requires embedded mode in daemon settings")
+	}
+	if shouldUseExistingLocalDaemon(settings) {
+		fmt.Printf("Using existing daemon on %s\n", settings.RPCBind)
+		select {}
+	}
+	embedded := daemonservice.NewEmbeddedDaemon(daemonservice.NewLogBuffer(1000))
+	if err := embedded.Start(settings); err != nil {
+		return err
+	}
+	rpcAddr := embedded.GetRPCBind()
+	defer embedded.Stop()
+
+	fmt.Printf("Embedded daemon running on %s\n", rpcAddr)
+	fmt.Println("Press Ctrl+C to stop.")
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	<-sigCh
+	return nil
 }
 
 // checkLastWallet auto-opens the last wallet if its network matches the current selection.

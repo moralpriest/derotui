@@ -1281,6 +1281,20 @@ func CheckDaemon(address string) bool {
 	return true
 }
 
+// InvalidateDaemonInfoCache clears cached daemon probe results for one address.
+func InvalidateDaemonInfoCache(address string) {
+	if strings.TrimSpace(address) == "" {
+		return
+	}
+	normalized, err := NormalizeDaemonAddress(address)
+	if err != nil {
+		return
+	}
+	daemonInfoMu.Lock()
+	delete(daemonInfoMemo, normalized)
+	daemonInfoMu.Unlock()
+}
+
 // CheckDaemonFast checks if a daemon is reachable with a shorter timeout
 func CheckDaemonFast(address string) bool {
 	hostPort, err := daemonHostPort(address)
@@ -1462,15 +1476,27 @@ func (w *Wallet) ClearDaemonAddress() {
 	w.daemonAddress = ""
 }
 
-// DaemonInfo contains basic daemon information
+// DaemonInfo contains daemon information from DERO.GetInfo RPC
 type DaemonInfo struct {
-	Height     uint64
-	TopoHeight int64
-	IsOnline   bool
-	IsSynced   bool
-	IsHealthy  bool   // true if daemon responds without errors
-	Testnet    bool   // true if daemon is running testnet
-	Network    string // "Simulator" if simulator mode, empty otherwise
+	Height          uint64
+	StableHeight    int64
+	TopoHeight      int64
+	IsOnline        bool
+	IsSynced        bool
+	IsBootstrapping bool
+	IsHealthy       bool
+	Testnet         bool
+	Network         string
+	Version         string
+	Difficulty      uint64
+	AvgBlockTime    float32
+	IncomingPeers   uint64
+	OutgoingPeers   uint64
+	KnownPeers      uint64
+	Uptime          uint64
+	TxPoolSize      uint64
+	Hashrate1hr     uint64
+	Hashrate1d      uint64
 }
 
 // TxStatus contains daemon-side status for a transaction hash.
@@ -1604,14 +1630,6 @@ func GetDaemonInfo(ctx context.Context, address string) DaemonInfo {
 
 	info := DaemonInfo{}
 
-	// Check if daemon is reachable first
-	if !CheckDaemon(normalized) {
-		daemonInfoMu.Lock()
-		daemonInfoMemo[normalized] = daemonInfoCacheEntry{info: info, fetchedAt: now}
-		daemonInfoMu.Unlock()
-		return info
-	}
-
 	// Build JSON-RPC request
 	reqBody := `{"jsonrpc":"2.0","id":"1","method":"DERO.GetInfo"}`
 	rpcURL, err := daemonRPCURL(normalized)
@@ -1642,11 +1660,22 @@ func GetDaemonInfo(ctx context.Context, address string) DaemonInfo {
 	var result struct {
 		Error  *json.RawMessage `json:"error"`
 		Result struct {
-			Height     uint64 `json:"height"`
-			TopoHeight int64  `json:"topoheight"`
-			Status     string `json:"status"`
-			Testnet    bool   `json:"testnet"`
-			Network    string `json:"network"`
+			Height                     uint64  `json:"height"`
+			StableHeight               int64   `json:"stableheight"`
+			TopoHeight                 int64   `json:"topoheight"`
+			Status                     string  `json:"status"`
+			Testnet                    bool    `json:"testnet"`
+			Network                    string  `json:"network"`
+			Version                    string  `json:"version"`
+			Difficulty                 uint64  `json:"difficulty"`
+			AverageBlockTime50         float32 `json:"averageblocktime50"`
+			Incoming_connections_count uint64  `json:"incoming_connections_count"`
+			Outgoing_connections_count uint64  `json:"outgoing_connections_count"`
+			White_peerlist_size        uint64  `json:"white_peerlist_size"`
+			Uptime                     uint64  `json:"uptime"`
+			Tx_pool_size               uint64  `json:"tx_pool_size"`
+			Hashrate_1hr               uint64  `json:"hashrate_1hr"`
+			Hashrate_1d                uint64  `json:"hashrate_1d"`
 		} `json:"result"`
 	}
 
@@ -1668,12 +1697,27 @@ func GetDaemonInfo(ctx context.Context, address string) DaemonInfo {
 	}
 
 	info.Height = result.Result.Height
+	info.StableHeight = result.Result.StableHeight
 	info.TopoHeight = result.Result.TopoHeight
 	info.IsOnline = true
 	info.IsHealthy = true
-	info.IsSynced = result.Result.Status == "OK"
+	height := int64(result.Result.Height)
+	topo := result.Result.TopoHeight
+	info.IsBootstrapping = height > 0 && topo != height
+	info.IsSynced = height > 0 && topo == height
 	info.Testnet = result.Result.Testnet
 	info.Network = result.Result.Network
+	info.Version = result.Result.Version
+	info.Difficulty = result.Result.Difficulty
+	info.AvgBlockTime = result.Result.AverageBlockTime50
+	info.IncomingPeers = result.Result.Incoming_connections_count
+	info.OutgoingPeers = result.Result.Outgoing_connections_count
+	info.KnownPeers = result.Result.White_peerlist_size
+	info.Uptime = result.Result.Uptime
+	info.TxPoolSize = result.Result.Tx_pool_size
+	info.StableHeight = result.Result.StableHeight
+	info.Hashrate1hr = result.Result.Hashrate_1hr
+	info.Hashrate1d = result.Result.Hashrate_1d
 
 	daemonInfoMu.Lock()
 	daemonInfoMemo[normalized] = daemonInfoCacheEntry{info: info, fetchedAt: now}

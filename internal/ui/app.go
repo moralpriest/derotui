@@ -19,6 +19,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	derolog "github.com/deroproject/dero-wallet-cli/internal/log"
+	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
@@ -97,9 +98,13 @@ const (
 	PageHistory
 	PageTxDetails
 	PageDaemon
+	PageDaemonStatus
+	PageDaemonLogs
+	PageDaemonSettings
 	PageIntegratedAddr // Generate integrated address
 	PageXSWDAuth       // XSWD app authorization dialog
 	PageXSWDPerm       // XSWD permission request dialog
+	PageMiner          // Embedded miner
 )
 
 // CLIOptions holds command line options
@@ -125,6 +130,7 @@ type CLIOptions struct {
 	ElectrumSeed      string
 	Unlocked          bool
 	Debug             bool
+	DaemonOnly        bool
 }
 
 // Model is the main application model
@@ -157,6 +163,10 @@ type Model struct {
 	history        pages.HistoryModel
 	txDetails      pages.TxDetailsModel
 	daemon         pages.DaemonModel
+	daemonStatus   pages.DaemonStatusModel
+	daemonLogs     pages.DaemonLogsModel
+	daemonSettings pages.DaemonSettingsModel
+	miner          pages.MinerModel
 	integratedAddr pages.IntegratedAddrModel
 
 	// State flags
@@ -196,22 +206,26 @@ type Model struct {
 	lastWalletDaemon      string
 
 	// Global debug console state (visible on all pages)
-	debugEnabled     bool
-	debugConsoleOpen bool
-	debugAutoFollow  bool
-	debugScrollStart int
-	debugLastClickY  int
-	debugLastClickAt time.Time
-	debugLogEntries  []derolog.LogEntry
-	regHintShown     bool
-	pendingRegTxID   string
-	pendingRegStatus string
-	pendingRegHeight uint64
-	pendingOutgoing  map[string]pendingOutgoingTx
-	startupFlowSet   bool
-	lastDaemonRetry  time.Time
-	daemonRetryAfter time.Duration
-	lastTxRefreshAt  time.Time
+	debugEnabled       bool
+	debugConsoleOpen   bool
+	debugAutoFollow    bool
+	debugScrollStart   int
+	debugLastClickY    int
+	debugLastClickAt   time.Time
+	debugLogEntries    []derolog.LogEntry
+	regHintShown       bool
+	pendingRegTxID     string
+	pendingRegStatus   string
+	pendingRegHeight   uint64
+	pendingOutgoing    map[string]pendingOutgoingTx
+	startupFlowSet     bool
+	lastDaemonRetry    time.Time
+	daemonRetryAfter   time.Duration
+	lastTxRefreshAt    time.Time
+	daemonManager      *daemonservice.Manager
+	embeddedDaemon     *daemonservice.EmbeddedDaemon
+	daemonManagedSince time.Time
+	lastEmbeddedError  string
 }
 
 type pendingOutgoingTx struct {
@@ -243,10 +257,16 @@ func NewModel() Model {
 		history:          pages.NewHistory(),
 		txDetails:        pages.NewTxDetails(),
 		daemon:           pages.NewDaemon(false, false),
+		daemonStatus:     pages.NewDaemonStatus(),
+		daemonLogs:       pages.NewDaemonLogs(),
+		daemonSettings:   pages.NewDaemonSettings(config.GetDaemonSettings()),
+		miner:            pages.NewMiner(),
+		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
 	}
 	m.welcome.Version = Version
 	m.password.SetVersion(Version)
+	m.embeddedDaemon = daemonservice.NewEmbeddedDaemon(nil)
 
 	return m
 }
@@ -323,13 +343,13 @@ func (m *Model) checkDaemonStatus() tea.Cmd {
 				}
 			}
 			return daemonStatusEntry{
-				isOnline:   info.IsOnline,
-				isSynced:   info.IsSynced,
-				isHealthy:  info.IsHealthy,
-				network:    network,
-				address:    address,
-				height:     info.Height,
-				topoHeight: info.TopoHeight,
+				isOnline:        info.IsOnline,
+				isSynced:        info.IsSynced,
+				isBootstrapping: info.IsBootstrapping,
+				isHealthy:       info.IsHealthy,
+				network:         network,
+				address:         address,
+				height:          info.Height,
 			}
 		}
 
@@ -564,6 +584,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
+		cmds = append(cmds, m.daemonTickCmd())
+		cmds = append(cmds, m.minerStatsCmd())
 		// Update wallet info periodically
 		if m.wallet != nil {
 			m.updateWalletInfo()
@@ -592,13 +614,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		welcomeDaemons := make([]pages.DaemonStatusInfo, 0, len(msg.daemons))
 		for _, daemon := range msg.daemons {
 			welcomeDaemons = append(welcomeDaemons, pages.DaemonStatusInfo{
-				IsOnline:    daemon.isOnline,
-				IsSynced:    daemon.isSynced,
-				IsHealthy:   daemon.isHealthy,
-				Network:     daemon.network,
-				Address:     daemon.address,
-				BlockHeight: daemon.height,
-				TopoHeight:  daemon.topoHeight,
+				IsOnline:        daemon.isOnline,
+				IsSynced:        daemon.isSynced,
+				IsBootstrapping: daemon.isBootstrapping,
+				IsHealthy:       daemon.isHealthy,
+				Network:         daemon.network,
+				Address:         daemon.address,
+				BlockHeight:     daemon.height,
 			})
 		}
 		m.welcome.SetDaemonStatuses(welcomeDaemons)
@@ -610,13 +632,60 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedDaemonHealthy = primary.isOnline && primary.isHealthy
 			m.cachedDaemonAddress = primary.address
 		}
-		if m.stickyDaemonAddress != "" {
-			for _, daemon := range msg.daemons {
-				if daemon.address == m.stickyDaemonAddress {
-					m.stickyDaemonHealthy = daemon.isOnline && daemon.isHealthy
-					break
-				}
-			}
+
+	case daemonManagerMsg:
+		if msg.err != "" {
+			m.lastEmbeddedError = msg.err
+		} else if msg.snapshot.Running {
+			m.lastEmbeddedError = ""
+		}
+		m.applyDaemonManagerMsg(msg)
+
+	case daemonInstallPreviewMsg:
+		m.daemonStatus.Downloading = false
+		if msg.err != "" {
+			m.daemonStatus.DownloadError = msg.err
+		} else {
+			cmds = append(cmds, m.daemonInstallApplyCmd(msg.plan))
+		}
+
+	case daemonSessionPreviewMsg:
+		m.daemonStatus.Downloading = false
+		if msg.err != "" {
+			m.daemonStatus.DownloadError = msg.err
+		} else {
+			m.daemonStatus.Downloading = true
+			cmds = append(cmds, m.daemonInstallDownloadCmd(msg.plan))
+		}
+
+	case daemonInstallDownloadMsg:
+		m.daemonStatus.Downloading = false
+		if msg.err != "" {
+			m.daemonStatus.DownloadError = msg.err
+		} else {
+			settings := config.GetDaemonSettings()
+			settings.BinaryPath = msg.plan.BinaryTarget
+			_ = config.SetDaemonSettings(settings)
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = "Downloaded and extracted derod to " + msg.target
+			m.daemonManagedSince = time.Now()
+			cmds = append(cmds, m.startLocalDaemonCmd(), m.setWindowTitleCmd())
+		}
+
+	case daemonInstallApplyMsg:
+		if msg.err != "" {
+			m.daemonStatus.DownloadError = msg.err
+		} else {
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = "Installed systemd unit and reloaded daemon manager"
+		}
+
+	case daemonInstallApplySudoMsg:
+		if msg.err != "" {
+			m.daemonStatus.DownloadError = msg.err
+		} else {
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = "Installed systemd unit with sudo and reloaded daemon manager"
 		}
 
 	case daemonConnectMsg:
@@ -641,6 +710,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.checkDaemonStatus())
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
+
+	case minerControlMsg:
+		if msg.err != "" {
+			m.miner.SetError(msg.err)
+			m.miner.SetRunning(false)
+			m.miner.SetStatus("")
+		} else if m.embeddedDaemon != nil {
+			miner := m.embeddedDaemon.MinerStatus()
+			m.miner.SetRunning(miner.Running)
+			if miner.Threads > 0 {
+				m.miner.SetThreads(miner.Threads)
+			}
+			m.miner.SetAddress(miner.Address)
+		}
+
+	case minerStatsMsg:
+		m.miner.SetRunning(msg.running)
+		m.miner.SetStats(msg.hashrate, msg.blocks)
+		m.miner.SetThreads(msg.threads)
+		m.miner.SetAddress(msg.address)
+		m.miner.SetStatus(msg.status)
 
 	case startupCheckMsg:
 		// If we have a last wallet, check network first
@@ -1200,6 +1290,116 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		cmds = append(cmds, m.handleDaemonAction())
 
+	case PageDaemonStatus:
+		m.daemonStatus, cmd = m.daemonStatus.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.daemonStatus.Cancelled() {
+			m.daemonStatus.ResetActions()
+			m.page = PageWelcome
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.daemonStatus.WantStart() {
+			m.daemonStatus.ResetActions()
+			isEmbeddedMode := config.GetDaemonSettings().Mode == "embedded" || m.daemonStatus.Snapshot.Source == "Embedded"
+			if !isEmbeddedMode && m.daemonStatus.Snapshot.Source == "Planned Local" && !m.daemonStatus.Snapshot.BinaryReady {
+				m.daemonStatus.Downloading = true
+				m.daemonStatus.DownloadError = ""
+				m.daemonStatus.InstallResult = ""
+				cmds = append(cmds, m.daemonSessionPreviewCmd(), m.setWindowTitleCmd())
+			} else {
+				if !isEmbeddedMode {
+					m.daemonManagedSince = time.Now()
+				}
+				cmds = append(cmds, m.startLocalDaemonCmd())
+			}
+		}
+		if m.daemonStatus.WantStop() {
+			m.daemonStatus.ResetActions()
+			cmds = append(cmds, m.stopLocalDaemonCmd())
+		}
+		if m.daemonStatus.WantRestart() {
+			m.daemonStatus.ResetActions()
+			cmds = append(cmds, m.restartLocalDaemonCmd())
+		}
+		if m.daemonStatus.WantLogs() {
+			m.daemonStatus.ResetActions()
+			m.page = PageDaemonLogs
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.daemonStatus.WantSettings() {
+			m.daemonStatus.ResetActions()
+			m.daemonSettings = pages.NewDaemonSettings(config.GetDaemonSettings())
+			m.page = PageDaemonSettings
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.daemonStatus.WantInstall() {
+			m.daemonStatus.ResetActions()
+			if config.GetDaemonSettings().Mode == "embedded" || m.daemonStatus.Snapshot.Source == "Embedded" {
+				m.daemonStatus.DownloadError = "install is only available in external mode"
+				m.daemonStatus.Downloading = false
+				break
+			}
+			m.daemonStatus.Downloading = true
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = ""
+			cmds = append(cmds, m.daemonInstallPreviewCmd())
+		}
+
+	case PageDaemonLogs:
+		m.daemonLogs, cmd = m.daemonLogs.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.daemonLogs.Cancelled() {
+			m.daemonLogs.Reset()
+			m.page = PageDaemonStatus
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+
+	case PageDaemonSettings:
+		m.daemonSettings, cmd = m.daemonSettings.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.daemonSettings.WantUseWallet() {
+			m.daemonSettings.ResetFlags()
+			if m.wallet != nil {
+				settings := m.daemonSettings.Settings
+				settings.IntegratorAddress = m.wallet.GetInfo().Address
+				m.daemonSettings = pages.NewDaemonSettings(settings)
+				m.daemonSettings.SetSuccess("Using current wallet address")
+			} else {
+				m.daemonSettings.SetError("Open a wallet first to use its address")
+			}
+		}
+		if m.daemonSettings.Saved() {
+			settings := m.daemonSettings.Settings
+			if err := config.SetDaemonSettings(settings); err != nil {
+				m.daemonSettings.SetError("Failed to save settings: " + err.Error())
+			} else {
+				m.daemonSettings.SetSuccess("Daemon settings saved")
+			}
+			m.daemonSettings.ResetFlags()
+		}
+		if m.daemonSettings.Cancelled() {
+			m.daemonSettings.ResetFlags()
+			m.page = PageDaemonStatus
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+
+	case PageMiner:
+		m.miner, cmd = m.miner.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.miner.Cancelled() {
+			m.miner.ResetActions()
+			m.page = PageWelcome
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.miner.WantStart() {
+			m.miner.ResetActions()
+			cmds = append(cmds, m.startMinerCmd())
+		}
+		if m.miner.WantStop() {
+			m.miner.ResetActions()
+			cmds = append(cmds, m.stopMinerCmd())
+		}
+
 	case PageIntegratedAddr:
 		m.integratedAddr, cmd = m.integratedAddr.Update(msg)
 		cmds = append(cmds, cmd)
@@ -1309,6 +1509,18 @@ func (m Model) View() tea.View {
 
 	case PageDaemon:
 		content = m.daemon.View()
+
+	case PageDaemonStatus:
+		content = m.renderDaemonStatus()
+
+	case PageDaemonLogs:
+		content = m.daemonLogs.View()
+
+	case PageDaemonSettings:
+		content = m.daemonSettings.View()
+
+	case PageMiner:
+		content = m.miner.View()
 
 	case PageIntegratedAddr:
 		content = m.integratedAddr.View()
@@ -1866,6 +2078,27 @@ func (m Model) renderTxDetails() string {
 	content := lipgloss.JoinVertical(lipgloss.Left,
 		centeredTitle,
 		leftAlignedDetails,
+	)
+
+	return themedBoxStyle().
+		Width(styles.Width).
+		Align(lipgloss.Left).
+		Padding(1, 4).
+		Render(content)
+}
+
+func (m Model) renderDaemonStatus() string {
+	title := styles.TitleStyle.Render("Daemon Manager")
+	daemonView := m.daemonStatus.View()
+
+	contentWidth := styles.Width - 10
+	centeredTitle := lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Center).Render(title)
+	leftAlignedContent := lipgloss.NewStyle().Width(contentWidth).Align(lipgloss.Left).Render(daemonView)
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		centeredTitle,
+		"",
+		leftAlignedContent,
 	)
 
 	return themedBoxStyle().

@@ -48,6 +48,8 @@ func (m *Model) handleMouseEvent(msg tea.MouseMsg) bool {
 	case PageDaemon:
 		m.daemon = m.daemon.HandleMouse(clickMsg, m.width, m.height)
 		return false
+	case PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageMiner:
+		return false
 	case PageIntegratedAddr:
 		m.integratedAddr = m.integratedAddr.HandleMouse(clickMsg, m.width, m.height)
 		return false

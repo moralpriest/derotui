@@ -29,11 +29,13 @@ const (
 	ActionRestoreSeed
 	ActionRestoreKey
 	ActionConnectDaemon
+	ActionDaemon
 	ActionSwitchNetwork
 	ActionDebug
 	ActionExit
 	ActionSetTheme
 	ActionPreviewTheme
+	ActionMiner
 )
 
 // Command represents a slash command
@@ -45,13 +47,13 @@ type Command struct {
 
 // DaemonStatusInfo represents one daemon status row on welcome page.
 type DaemonStatusInfo struct {
-	IsOnline    bool
-	IsSynced    bool
-	IsHealthy   bool
-	Network     string
-	Address     string
-	BlockHeight uint64
-	TopoHeight  int64
+	IsOnline        bool
+	IsSynced        bool
+	IsBootstrapping bool
+	IsHealthy       bool
+	Network         string
+	Address         string
+	BlockHeight     uint64
 }
 
 // WelcomeModel represents the welcome screen
@@ -68,19 +70,19 @@ type WelcomeModel struct {
 	inThemesMenu    bool
 	themeOptions    []Command
 	themeSelected   int
-	selectedTheme   string // Store the selected theme ID
-	previousTheme   string // Store theme before entering themes menu
+	selectedTheme   string
+	previousTheme   string
 	IsOnline        bool
 	IsSynced        bool
+	IsBootstrapping bool
 	IsHealthy       bool
 	Network         string
 	DaemonAddress   string
 	BlockHeight     uint64
-	TopoHeight      int64
 	Daemons         []DaemonStatusInfo
 	Version         string
-	errorMsg        string // Error message to display
-	successMsg      string // Success message to display
+	errorMsg        string
+	successMsg      string
 }
 
 // ActionRestore is used internally to trigger restore submenu
@@ -123,6 +125,8 @@ func NewWelcome() WelcomeModel {
 		{Name: "/open", Description: "Open an existing wallet", Action: ActionOpen},
 		{Name: "/create", Description: "Create a new wallet", Action: ActionCreate},
 		{Name: "/restore", Description: "Restore a wallet", Action: ActionRestore},
+		{Name: "/daemon", Description: "Manage local daemon", Action: ActionDaemon},
+		{Name: "/miner", Description: "Start embedded miner", Action: ActionMiner},
 		{Name: "/themes", Description: "Change color theme", Action: ActionThemes},
 		{Name: "/connect", Description: "Connect to a daemon", Action: ActionConnectDaemon},
 		{Name: "/debug", Description: "Open debug console", Action: ActionDebug},
@@ -390,13 +394,13 @@ func (w WelcomeModel) View() string {
 		}
 	} else {
 		metaRows = append(metaRows, renderDaemonSummaryLine(DaemonStatusInfo{
-			IsOnline:    w.IsOnline,
-			IsSynced:    w.IsSynced,
-			IsHealthy:   w.IsHealthy,
-			Network:     w.Network,
-			Address:     w.DaemonAddress,
-			BlockHeight: w.BlockHeight,
-			TopoHeight:  w.TopoHeight,
+			IsOnline:        w.IsOnline,
+			IsSynced:        w.IsSynced,
+			IsBootstrapping: w.IsBootstrapping,
+			IsHealthy:       w.IsHealthy,
+			Network:         w.Network,
+			Address:         w.DaemonAddress,
+			BlockHeight:     w.BlockHeight,
 		}))
 	}
 
@@ -703,22 +707,22 @@ func (w *WelcomeModel) ResetInput() {
 }
 
 // SetDaemonStatus sets the daemon connection status
-func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isHealthy bool, network string, address string, blockHeight uint64, topoHeight int64) {
+func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isBootstrapping bool, isHealthy bool, network string, address string, blockHeight uint64) {
 	w.IsOnline = isOnline
 	w.IsSynced = isSynced
+	w.IsBootstrapping = isBootstrapping
 	w.IsHealthy = isHealthy
 	w.Network = network
 	w.DaemonAddress = address
 	w.BlockHeight = blockHeight
-	w.TopoHeight = topoHeight
 	w.Daemons = []DaemonStatusInfo{{
-		IsOnline:    isOnline,
-		IsSynced:    isSynced,
-		IsHealthy:   isHealthy,
-		Network:     network,
-		Address:     address,
-		BlockHeight: blockHeight,
-		TopoHeight:  topoHeight,
+		IsOnline:        isOnline,
+		IsSynced:        isSynced,
+		IsBootstrapping: isBootstrapping,
+		IsHealthy:       isHealthy,
+		Network:         network,
+		Address:         address,
+		BlockHeight:     blockHeight,
 	}}
 }
 
@@ -728,21 +732,21 @@ func (w *WelcomeModel) SetDaemonStatuses(daemons []DaemonStatusInfo) {
 	if len(w.Daemons) == 0 {
 		w.IsOnline = false
 		w.IsSynced = false
+		w.IsBootstrapping = false
 		w.IsHealthy = false
 		w.Network = ""
 		w.DaemonAddress = ""
 		w.BlockHeight = 0
-		w.TopoHeight = 0
 		return
 	}
 	primary := w.Daemons[0]
 	w.IsOnline = primary.IsOnline
 	w.IsSynced = primary.IsSynced
+	w.IsBootstrapping = primary.IsBootstrapping
 	w.IsHealthy = primary.IsHealthy
 	w.Network = primary.Network
 	w.DaemonAddress = primary.Address
 	w.BlockHeight = primary.BlockHeight
-	w.TopoHeight = primary.TopoHeight
 }
 
 // SetError sets an error message to display on the welcome screen
@@ -822,6 +826,12 @@ func (w *WelcomeModel) HandleMouse(msg tea.MouseClickMsg, windowWidth, windowHei
 					w.inRestoreMenu = true
 					w.restoreSelected = 0
 					w.showMenu = false
+				} else if selectedAction == ActionDaemon {
+					w.showMenu = false
+					w.input.SetValue("")
+					w.input.Reset()
+					w.filtered = []Command{}
+					w.action = selectedAction
 				} else if selectedAction == ActionThemes {
 					w.inThemesMenu = true
 					w.themeSelected = 0

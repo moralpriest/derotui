@@ -83,6 +83,14 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		m.page = PageDaemon
 		return tea.Batch(m.daemon.Init(), m.setWindowTitleCmd())
 
+	case pages.ActionDaemon:
+		m.page = PageDaemonStatus
+		return tea.Batch(m.daemonManagerStatusCmd(), m.setWindowTitleCmd())
+
+	case pages.ActionMiner:
+		m.page = PageMiner
+		return m.setWindowTitleCmd()
+
 	case pages.ActionSwitchNetwork:
 		network := "Mainnet"
 		switch m.welcome.Network {
