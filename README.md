@@ -2,6 +2,8 @@
 
 A modern terminal-based wallet for the DERO blockchain, built with [Bubble Tea](https://github.com/charmbracelet/bubbletea).
 
+![DERO Wallet TUI](media/themes-showcase.gif)
+
 ## Features
 
 - **Modern TUI**: Clean, keyboard-driven interface using Bubble Tea
@@ -18,6 +20,8 @@ A modern terminal-based wallet for the DERO blockchain, built with [Bubble Tea](
 - **RPC Server**: Built-in JSON-RPC server for external access
 - **Offline Mode**: Work without daemon connection
 - **Network Support**: Mainnet, Testnet, and Simulator support with auto-detection
+
+![Dashboard Navigation](media/dashboard-nav.gif)
 
 ## Installation
 
@@ -110,9 +114,15 @@ task build
 ## CLI Startup Behavior
 
 - `--generate-new-wallet` starts directly in wallet creation flow.
+
+![Create Wallet](media/create-flow.gif)
+
 - `--restore-deterministic-wallet` starts restore flow:
   - With `--electrum-seed`: opens password step directly.
   - Without `--electrum-seed`: opens seed input page.
+
+![Restore from Seed](media/restore-seed.gif)
+![Restore from Key](media/restore-key.gif)
 - `--wallet-file` opens that file path exactly as provided.
 - `--wallet-file` + `--password` attempts direct wallet open without password prompt.
 - `--offline` skips daemon auto-detection and keeps wallet in offline mode.
@@ -129,6 +139,8 @@ task build
 - `/exit` - Exit the application
 - Arrow keys to navigate
 - Enter to select
+
+![Command Menu](media/command-menu.gif)
 
 #### Themes
 Available color themes (selected theme is saved and restored on startup):
@@ -189,6 +201,8 @@ Available color themes (selected theme is saved and restored on startup):
 Recipient field accepts either:
 - a standard DERO address, or
 - a plain username resolved on-chain through the connected daemon name service (no `@` prefix)
+
+![Send DERO](media/send-dero.gif)
 
 ### Seed/Key Display
 - `C` - Copy to clipboard

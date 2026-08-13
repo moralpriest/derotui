@@ -52,3 +52,7 @@ testnet/
 
 # Crush files (if using crush)
 .crush/
+
+# Local scratch / downloads
+.drop
+.tmp_dero_*.tar.gz
