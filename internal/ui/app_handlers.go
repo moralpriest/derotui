@@ -523,12 +523,12 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 			m.xswdBridge.Stop()
 			m.xswdBridge = nil
 			m.dashboard.SetXSWDRunning(false)
-			m.dashboard.SetFlashMessage("XSWD server stopped", true)
+			m.dashboard.SetFlashMessage("XSWD + EPOCH stopped", true)
 		} else {
 			// Start XSWD
 			derolog.Info("xswd", "start.request", "Starting XSWD server")
 			m.dashboard.SetXSWDRunning(true) // Optimistic - will correct if fails
-			m.dashboard.SetFlashMessage("XSWD server starting...", true)
+			m.dashboard.SetFlashMessage("XSWD + EPOCH starting...", true)
 			return tea.Batch(m.startXSWDCmd(), cmd)
 		}
 	}

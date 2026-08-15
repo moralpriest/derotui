@@ -640,7 +640,7 @@ func (m *Model) startXSWDCmd() tea.Cmd {
 		if m.wallet == nil || m.program == nil {
 			return wallet.XSWDStartedMsg{Err: fmt.Errorf("wallet or program not ready")}
 		}
-		bridge := wallet.StartXSWD(m.wallet.GetDisk(), m.program)
+		bridge := wallet.StartXSWD(m.wallet.GetDisk(), m.program, m.wallet.GetInfo().Address, m.wallet.GetInfo().DaemonAddress, m.wallet.GetInfo().Network)
 		if !bridge.IsRunning() {
 			return wallet.XSWDStartedMsg{Err: fmt.Errorf("XSWD server failed to start")}
 		}

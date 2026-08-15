@@ -974,7 +974,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			derolog.Info("xswd", "start.success", "XSWD server started")
 			m.xswdBridge = msg.Bridge
 			m.dashboard.SetXSWDRunning(true)
-			m.dashboard.SetFlashMessage("XSWD server running", true)
+			if msg.Bridge != nil && msg.Bridge.EpochRunning() {
+				m.dashboard.SetFlashMessage("XSWD + EPOCH running", true)
+			} else {
+				m.dashboard.SetFlashMessage("XSWD server running", true)
+			}
 		}
 
 	case logUpdateMsg:
