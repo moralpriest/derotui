@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -67,7 +66,6 @@ func (k KeyInputModel) Update(msg tea.Msg) (KeyInputModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if key.Matches(msg, pageEscKeys) {
-			log.Printf("[DEBUG keyinput] Cancelled hex key %s", map[KeyInputMode]string{KeyModeInput: "input", KeyModeDisplay: "display"}[k.mode])
 			k.cancelled = true
 			return k, nil
 		}
@@ -77,13 +75,11 @@ func (k KeyInputModel) Update(msg tea.Msg) (KeyInputModel, tea.Cmd) {
 			if key.Matches(msg, pageCopyKeys) {
 				if err := clipboard.WriteAll(k.hexKey); err == nil {
 					k.copied = true
-					log.Printf("[DEBUG keyinput] Copied hex key to clipboard")
 				}
 				return k, nil
 			}
 			if key.Matches(msg, pageEnterKeys) {
 				k.confirmed = true
-				log.Printf("[DEBUG keyinput] Confirmed hex key display")
 			}
 			return k, nil
 		}
@@ -93,19 +89,16 @@ func (k KeyInputModel) Update(msg tea.Msg) (KeyInputModel, tea.Cmd) {
 			key := strings.TrimSpace(k.input.Value())
 			if len(key) != 64 {
 				k.error = "Key must be exactly 64 hexadecimal characters"
-				log.Printf("[DEBUG keyinput] Validation failed: wrong length (%d)", len(key))
 				return k, nil
 			}
 			// Validate hex
 			for _, c := range key {
 				if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
 					k.error = "Key must contain only hexadecimal characters (0-9, a-f)"
-					log.Printf("[DEBUG keyinput] Validation failed: invalid hex character")
 					return k, nil
 				}
 			}
 			k.confirmed = true
-			log.Printf("[DEBUG keyinput] Hex key input confirmed")
 			return k, nil
 		}
 

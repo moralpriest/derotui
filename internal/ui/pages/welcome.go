@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -201,7 +200,6 @@ func (w WelcomeModel) Update(msg tea.Msg) (WelcomeModel, tea.Cmd) {
 				return w, nil
 			case key.Matches(msg, pageEnterKeys):
 				action := w.restoreOptions[w.restoreSelected].Action
-				log.Printf("[DEBUG Welcome] Restore submenu - selected action=%d", action)
 				w.action = action
 				return w, nil
 			}
@@ -261,7 +259,6 @@ func (w WelcomeModel) Update(msg tea.Msg) (WelcomeModel, tea.Cmd) {
 				// Execute selected command
 				if w.selected < len(w.filtered) {
 					selectedAction := w.filtered[w.selected].Action
-					log.Printf("[DEBUG Welcome] Menu - selected action=%d", selectedAction)
 					if selectedAction == ActionRestore {
 						w.inRestoreMenu = true
 						w.restoreSelected = 0
@@ -281,7 +278,6 @@ func (w WelcomeModel) Update(msg tea.Msg) (WelcomeModel, tea.Cmd) {
 						}
 						return w, nil
 					}
-					log.Printf("[DEBUG Welcome] Menu selected action=%d (%s)", selectedAction, w.filtered[w.selected].Name)
 					// Clear input immediately when command is selected
 					w.input.SetValue("")
 					w.input.Reset()
@@ -296,10 +292,8 @@ func (w WelcomeModel) Update(msg tea.Msg) (WelcomeModel, tea.Cmd) {
 		// Handle enter without menu - check for exact command match
 		if key.Matches(msg, pageEnterKeys) && !w.showMenu {
 			val := strings.TrimSpace(w.input.Value())
-			log.Printf("[DEBUG Welcome] Enter pressed")
 			for _, c := range w.commands {
 				if c.Name == val {
-					log.Printf("[DEBUG Welcome] Direct command match: %s -> action=%d", c.Name, c.Action)
 					if c.Action == ActionRestore {
 						w.inRestoreMenu = true
 						w.restoreSelected = 0
@@ -324,7 +318,6 @@ func (w WelcomeModel) Update(msg tea.Msg) (WelcomeModel, tea.Cmd) {
 					return w, nil
 				}
 			}
-			log.Printf("[DEBUG Welcome] No command match")
 		}
 
 		// Quick-fix shortcuts (shown with welcome alert)
@@ -355,7 +348,6 @@ func (w WelcomeModel) Update(msg tea.Msg) (WelcomeModel, tea.Cmd) {
 			w.showMenu = true
 			w.filtered = w.filterCommands(newValue)
 			w.selected = 0
-			log.Printf("[DEBUG Welcome] Filtering commands for '%s', found %d matches", newValue, len(w.filtered))
 		} else {
 			w.showMenu = false
 			w.filtered = []Command{}

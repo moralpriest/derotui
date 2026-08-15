@@ -99,9 +99,9 @@ func (m Model) toggleDebugLoggingCmd(openConsole bool) tea.Cmd {
 	}
 }
 
-func (m *Model) updateWalletInfo() {
+func (m *Model) updateWalletInfo() tea.Cmd {
 	if m.wallet == nil {
-		return
+		return nil
 	}
 
 	info := m.wallet.GetInfo()
@@ -129,18 +129,6 @@ func (m *Model) updateWalletInfo() {
 			if m.pendingRegStatus != "" {
 				status = m.pendingRegStatus
 			}
-			if info.DaemonAddress != "" && info.DaemonAddress != "Not connected" {
-				txStatus, err := wallet.GetTxStatus(context.Background(), info.DaemonAddress, m.pendingRegTxID)
-				if err == nil && txStatus.Found {
-					status = txStatus.Status
-					m.pendingRegStatus = status
-					if txStatus.Rejected {
-						m.clearPendingRegistration()
-						m.dashboard.SetFlashMessage("Registration rejected by daemon. Press [G] to retry.", false)
-					}
-				}
-			}
-
 			if m.pendingRegTxID != "" {
 				if m.pendingRegHeight == 0 {
 					m.pendingRegHeight = info.DaemonHeight
@@ -160,38 +148,20 @@ func (m *Model) updateWalletInfo() {
 	// Update send balance
 	m.send.SetBalance(info.Balance)
 
-	// Update transactions.
+	var cmds []tea.Cmd
+
+	// Poll registration status via daemon RPC off the UI thread.
+	if m.pendingRegTxID != "" && !info.IsRegistered && info.DaemonAddress != "" && info.DaemonAddress != "Not connected" {
+		cmds = append(cmds, m.checkPendingRegistrationCmd(info.DaemonAddress, m.pendingRegTxID))
+	}
+
+	// Update transactions off the UI thread (GetTransactions can block on
+	// Show_Transfers for cold caches / large histories).
 	// When offline, refresh less frequently to reduce startup/connect latency
 	// for wallets with large histories.
 	shouldRefreshTxs := info.IsOnline || m.lastTxRefreshAt.IsZero() || time.Since(m.lastTxRefreshAt) >= txRefreshIntervalOffline
 	if shouldRefreshTxs {
-		txs := m.wallet.GetTransactions(50)
-		var pageTxs []pages.Transaction
-		for _, tx := range txs {
-			pageTxs = append(pageTxs, pages.Transaction{
-				TxID:            tx.TxID,
-				Amount:          tx.Amount,
-				Height:          tx.Height,
-				TopoHeight:      tx.TopoHeight,
-				Timestamp:       wallet.FormatTimestamp(tx.Timestamp),
-				Coinbase:        tx.Coinbase,
-				Incoming:        tx.Incoming,
-				Fee:             tx.Fee,
-				BlockHash:       tx.BlockHash,
-				Proof:           tx.Proof,
-				Sender:          tx.Sender,
-				Destination:     tx.Destination,
-				Burn:            tx.Burn,
-				DestinationPort: tx.DestinationPort,
-				SourcePort:      tx.SourcePort,
-				Status:          tx.Status,
-				Message:         tx.Message,
-			})
-		}
-		pageTxs = m.mergePendingOutgoing(pageTxs)
-		m.dashboard.SetRecentTxs(pageTxs)
-		m.history.SetTransactions(pageTxs)
-		m.lastTxRefreshAt = time.Now()
+		cmds = append(cmds, m.refreshWalletDataCmd())
 	}
 
 	if m.page == PageMain && !info.IsRegistered && !m.regHintShown {
@@ -202,6 +172,81 @@ func (m *Model) updateWalletInfo() {
 	// Update log entries if debug is enabled
 	if m.Opts.Debug {
 		m.updateDashboardLogEntries()
+	}
+
+	return tea.Batch(cmds...)
+}
+
+// refreshWalletDataCmd loads recent transactions off the UI thread.
+func (m *Model) refreshWalletDataCmd() tea.Cmd {
+	w := m.wallet
+	return func() tea.Msg {
+		if w == nil {
+			return walletDataMsg{err: "wallet not open"}
+		}
+		return walletDataMsg{txs: w.GetTransactions(50)}
+	}
+}
+
+// checkPendingRegistrationCmd polls the daemon for registration TX status off
+// the UI thread.
+func (m *Model) checkPendingRegistrationCmd(daemonAddr, txID string) tea.Cmd {
+	return func() tea.Msg {
+		txStatus, err := wallet.GetTxStatus(context.Background(), daemonAddr, txID)
+		if err != nil {
+			return regPollMsg{txID: txID, err: err.Error()}
+		}
+		return regPollMsg{txID: txID, status: txStatus.Status, found: txStatus.Found, rejected: txStatus.Rejected}
+	}
+}
+
+// applyWalletData merges freshly loaded transactions into the dashboard and
+// history models. Runs on the UI thread.
+func (m *Model) applyWalletData(msg walletDataMsg) {
+	if msg.err != "" || len(msg.txs) == 0 {
+		return
+	}
+	var pageTxs []pages.Transaction
+	for _, tx := range msg.txs {
+		pageTxs = append(pageTxs, pages.Transaction{
+			TxID:            tx.TxID,
+			Amount:          tx.Amount,
+			Height:          tx.Height,
+			TopoHeight:      tx.TopoHeight,
+			Timestamp:       wallet.FormatTimestamp(tx.Timestamp),
+			Coinbase:        tx.Coinbase,
+			Incoming:        tx.Incoming,
+			Fee:             tx.Fee,
+			BlockHash:       tx.BlockHash,
+			Proof:           tx.Proof,
+			Sender:          tx.Sender,
+			Destination:     tx.Destination,
+			Burn:            tx.Burn,
+			DestinationPort: tx.DestinationPort,
+			SourcePort:      tx.SourcePort,
+			Status:          tx.Status,
+			Message:         tx.Message,
+		})
+	}
+	pageTxs = m.mergePendingOutgoing(pageTxs)
+	m.dashboard.SetRecentTxs(pageTxs)
+	m.history.SetTransactions(pageTxs)
+	m.lastTxRefreshAt = time.Now()
+}
+
+// applyRegPoll updates registration status from a background poll result.
+func (m *Model) applyRegPoll(msg regPollMsg) {
+	if msg.err != "" || msg.txID != m.pendingRegTxID {
+		return
+	}
+	if msg.found {
+		m.pendingRegStatus = msg.status
+		if msg.rejected {
+			m.clearPendingRegistration()
+			m.dashboard.SetFlashMessage("Registration rejected by daemon. Press [G] to retry.", false)
+		} else {
+			m.dashboard.SetRegistrationPending(m.pendingRegTxID, msg.status)
+		}
 	}
 }
 
@@ -432,7 +477,12 @@ func (m *Model) registerWalletCmd() tea.Cmd {
 			return registrationResultMsg{alreadyRegistered: true}
 		}
 
-		txID, err := w.Register()
+		// Bound the PoW search: abort on wallet close or after 60s so the
+		// dashboard never stays stuck in "Registering..." forever.
+		ctx, cancel := context.WithTimeout(w.Context(), 60*time.Second)
+		defer cancel()
+
+		txID, err := w.Register(ctx)
 		if err != nil {
 			return registrationResultMsg{err: err.Error()}
 		}
@@ -573,8 +623,19 @@ func (m *Model) startXSWDCmd() tea.Cmd {
 			return wallet.XSWDStartedMsg{Err: fmt.Errorf("wallet or program not ready")}
 		}
 		bridge := wallet.StartXSWD(m.wallet.GetDisk(), m.program)
+		if !bridge.IsRunning() {
+			return wallet.XSWDStartedMsg{Err: fmt.Errorf("XSWD server failed to start")}
+		}
 		return wallet.XSWDStartedMsg{Bridge: bridge}
 	}
+}
+
+// xswdDialogTimeoutCmd dismisses an XSWD dialog after the server-side timeout
+// elapses, so a dialog never hangs the UI forever.
+func (m *Model) xswdDialogTimeoutCmd() tea.Cmd {
+	return tea.Tick(wallet.XSWDDialogTimeout, func(time.Time) tea.Msg {
+		return xswdDialogTimeoutMsg{}
+	})
 }
 
 func (m *Model) tickCmd() tea.Cmd {

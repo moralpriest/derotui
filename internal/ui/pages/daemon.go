@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -72,7 +71,6 @@ func (d DaemonModel) Update(msg tea.Msg) (DaemonModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		// Handle escape first
 		if key.Matches(msg, pageEscKeys) {
-			log.Printf("[DEBUG daemon] Cancelled daemon connection")
 			d.cancelled = true
 			return d, nil
 		}
@@ -105,7 +103,6 @@ func (d DaemonModel) Update(msg tea.Msg) (DaemonModel, tea.Cmd) {
 			} else if !strings.Contains(addr, ":") {
 				addr = addr + ":" + d.DefaultPort()
 			}
-			log.Printf("[DEBUG daemon] Confirmed daemon address: %s", addr)
 			d.address = addr
 			d.confirmed = true
 			return d, nil

@@ -97,3 +97,24 @@ type networkRequiredMsg struct {
 	file     string
 	password string
 }
+
+// walletDataMsg is sent when a background transaction-refresh completes.
+// The heavy GetTransactions call (Show_Transfers) runs off the UI thread.
+type walletDataMsg struct {
+	txs []wallet.TransactionInfo
+	err string
+}
+
+// regPollMsg carries the result of a background registration-status poll.
+type regPollMsg struct {
+	txID     string
+	status   string
+	found    bool
+	rejected bool
+	err      string
+}
+
+// xswdDialogTimeoutMsg fires when an XSWD auth/permission dialog has been
+// shown too long; the TUI dismisses it (denying the request) so it doesn't
+// hang forever.
+type xswdDialogTimeoutMsg struct{}

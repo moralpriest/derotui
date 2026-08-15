@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"os"
 	"strings"
 	"unicode"
@@ -95,7 +94,6 @@ func (p PasswordModel) Update(msg tea.Msg) (PasswordModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		// Handle escape first
 		if key.Matches(msg, pageEscKeys) {
-			log.Printf("[DEBUG password] Cancelled password entry (mode=%d)", p.Mode)
 			p.cancelled = true
 			return p, nil
 		}
@@ -112,7 +110,6 @@ func (p PasswordModel) Update(msg tea.Msg) (PasswordModel, tea.Cmd) {
 			p.currentInput.ToggleReveal()
 			p.input.ToggleReveal()
 			p.confirmInput.ToggleReveal()
-			log.Printf("[DEBUG password] Toggled password reveal")
 			return p, nil
 		}
 
@@ -200,7 +197,6 @@ func (p PasswordModel) handleEnter() (PasswordModel, tea.Cmd) {
 		p.password = p.input.Value()
 		p.currentPassword = p.currentInput.Value() // Store snapshot of current password
 		p.confirmed = true
-		log.Printf("[DEBUG password] Password change confirmed")
 		return p, nil
 
 	} else if p.Mode == PasswordModeCreate {
@@ -252,7 +248,6 @@ func (p PasswordModel) handleEnter() (PasswordModel, tea.Cmd) {
 		p.walletName = walletName
 		p.password = p.input.Value()
 		p.confirmed = true
-		log.Printf("[DEBUG password] Wallet creation confirmed: %s", walletName)
 		return p, nil
 
 	} else {
@@ -263,7 +258,6 @@ func (p PasswordModel) handleEnter() (PasswordModel, tea.Cmd) {
 		}
 		p.password = p.input.Value()
 		p.confirmed = true
-		log.Printf("[DEBUG password] Password submitted for unlock")
 		return p, nil
 	}
 }

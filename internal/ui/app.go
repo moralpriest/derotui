@@ -403,47 +403,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		keyStr := msg.String()
 		// Global quit - Ctrl+C works from any page
 		if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))) {
-			// Respond on any pending XSWD channels before quitting
-			if m.xswdAuthCh != nil {
-				m.xswdAuthCh <- false
-				m.xswdAuthCh = nil
-			}
-			if m.xswdPermCh != nil {
-				m.xswdPermCh <- wallet.XSWDPermDeny
-				m.xswdPermCh = nil
-			}
-			if m.xswdBridge != nil {
-				m.xswdBridge.Stop()
-				m.xswdBridge = nil
-				m.dashboard.SetXSWDRunning(false)
-			}
-			if m.wallet != nil {
-				m.wallet.Close()
-			}
-			m.quitting = true
+			m.shutdownSession(true)
 			return m, tea.Quit
 		}
 
 		// Q to quit only from main page (dashboard)
 		if key.Matches(msg, key.NewBinding(key.WithKeys("q"))) && m.page == PageMain {
-			// Respond on any pending XSWD channels before quitting
-			if m.xswdAuthCh != nil {
-				m.xswdAuthCh <- false
-				m.xswdAuthCh = nil
-			}
-			if m.xswdPermCh != nil {
-				m.xswdPermCh <- wallet.XSWDPermDeny
-				m.xswdPermCh = nil
-			}
-			if m.xswdBridge != nil {
-				m.xswdBridge.Stop()
-				m.xswdBridge = nil
-				m.dashboard.SetXSWDRunning(false)
-			}
-			if m.wallet != nil {
-				m.wallet.Close()
-			}
-			m.quitting = true
+			m.shutdownSession(true)
 			return m, tea.Quit
 		}
 
@@ -452,32 +418,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.page {
 			case PageMain:
 				// Respond on any pending XSWD channels before closing wallet
-				if m.xswdAuthCh != nil {
-					m.xswdAuthCh <- false
-					m.xswdAuthCh = nil
-				}
-				if m.xswdPermCh != nil {
-					m.xswdPermCh <- wallet.XSWDPermDeny
-					m.xswdPermCh = nil
-				}
-				// Stop XSWD server before closing wallet
-				if m.xswdBridge != nil {
-					m.xswdBridge.Stop()
-					m.xswdBridge = nil
-					m.dashboard.SetXSWDRunning(false)
-				}
-				// Close wallet and go back to welcome
-				if m.wallet != nil {
-					m.lastWalletDaemon = m.wallet.GetDaemonAddress()
-					m.wallet.Close()
-					m.wallet = nil
-				}
-				// Clear app-level cached state (keep global daemon endpoint for switch detection)
-				m.cachedDaemonHealthy = false
-				m.cachedDaemonAddress = ""
-				m.Opts.DaemonAddress = m.cliDaemonAddress
-				m.regHintShown = false
-				m.clearPendingRegistration()
+				m.shutdownSession(false)
 				m.page = PageWelcome
 				m.welcome = pages.NewWelcome()
 				m.welcome.Version = Version
@@ -566,7 +507,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		// Update wallet info periodically
 		if m.wallet != nil {
-			m.updateWalletInfo()
+			cmds = append(cmds, m.updateWalletInfo())
 			// Update title to reflect current balance and sync status
 			cmds = append(cmds, m.setWindowTitleCmd())
 
@@ -873,7 +814,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.alreadyRegistered {
 			m.clearPendingRegistration()
 			m.dashboard.SetFlashMessage("Wallet is already registered", true)
-			m.updateWalletInfo()
+			cmds = append(cmds, m.updateWalletInfo())
 			break
 		}
 		if msg.txID != "" {
@@ -890,7 +831,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.dashboard.SetFlashMessage("Registration transaction dispatched", true)
 		}
-		m.updateWalletInfo()
+		cmds = append(cmds, m.updateWalletInfo())
+
+	case walletDataMsg:
+		m.applyWalletData(msg)
+
+	case regPollMsg:
+		m.applyRegPoll(msg)
 
 	case passwordChangedMsg:
 		if msg.err != nil {
@@ -911,7 +858,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.connected {
 			m.lastDaemonRetry = time.Time{}
 			m.daemonRetryAfter = initialDaemonRetryInterval
-			m.updateWalletInfo() // Refresh balance/status now that we're connected
+			cmds = append(cmds, m.updateWalletInfo()) // Refresh balance/status now that we're connected
 			// Update daemon address to match what wallet connected to
 			if msg.daemonAddress != "" {
 				m.cachedDaemonAddress = msg.daemonAddress
@@ -942,7 +889,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dashboard.SetFlashMessage(msg.err+" - Wallet opened offline. Use /connect to retry.", false)
 			m.dashboard.SetConnecting(false)
 			// Update wallet info to show offline status
-			m.updateWalletInfo()
+			cmds = append(cmds, m.updateWalletInfo())
 			// Stay on dashboard (don't close wallet or go back to welcome)
 			m.page = PageMain
 			cmds = append(cmds, m.setWindowTitleCmd())
@@ -972,7 +919,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.xswdAuthCh = msg.Response
 		m.xswdAuth = pages.NewXSWDAuth(msg.App.Name, msg.App.Description, msg.App.URL, msg.App.ID)
 		m.page = PageXSWDAuth
-		cmds = append(cmds, m.setWindowTitleCmd())
+		cmds = append(cmds, m.setWindowTitleCmd(), m.xswdDialogTimeoutCmd())
 
 	case wallet.XSWDPermissionRequest:
 		derolog.Info("xswd", "perm.request", "XSWD permission request received", "app", msg.Perm.AppName, "method", msg.Perm.Method)
@@ -986,6 +933,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.xswdPermCh = msg.Response
 		m.xswdPerm = pages.NewXSWDPerm(msg.Perm.AppName, msg.Perm.Method)
 		m.page = PageXSWDPerm
+		cmds = append(cmds, m.setWindowTitleCmd(), m.xswdDialogTimeoutCmd())
+
+	case xswdDialogTimeoutMsg:
+		// Dismiss an XSWD dialog after the server-side timeout, denying the
+		// request, so the UI never stays stuck on a dialog.
+		switch m.page {
+		case PageXSWDAuth:
+			if m.xswdAuthCh != nil {
+				m.xswdAuthCh <- false
+				m.xswdAuthCh = nil
+			}
+			m.xswdAuth.Reset()
+			m.page = m.xswdPrevPage
+		case PageXSWDPerm:
+			if m.xswdPermCh != nil {
+				m.xswdPermCh <- wallet.XSWDPermDeny
+				m.xswdPermCh = nil
+			}
+			m.xswdPerm.Reset()
+			m.page = m.xswdPrevPage
+		}
 		cmds = append(cmds, m.setWindowTitleCmd())
 
 	case wallet.XSWDStartedMsg:
@@ -1052,6 +1020,53 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Route to current page
+	return m.dispatchPage(msg, cmds)
+}
+
+// shutdownSession cleans up XSWD state and closes the wallet. When quitting is
+// true the app is terminating; when false the wallet is just being closed to
+// return to the welcome page.
+func (m *Model) shutdownSession(quitting bool) {
+	// Respond on any pending XSWD channels before closing wallet
+	if m.xswdAuthCh != nil {
+		m.xswdAuthCh <- false
+		m.xswdAuthCh = nil
+	}
+	if m.xswdPermCh != nil {
+		m.xswdPermCh <- wallet.XSWDPermDeny
+		m.xswdPermCh = nil
+	}
+	// Stop XSWD server before closing wallet
+	if m.xswdBridge != nil {
+		m.xswdBridge.Stop()
+		m.xswdBridge = nil
+		m.dashboard.SetXSWDRunning(false)
+	}
+	// Close wallet and go back to welcome
+	if m.wallet != nil {
+		if quitting {
+			m.wallet.Close()
+		} else {
+			m.lastWalletDaemon = m.wallet.GetDaemonAddress()
+			m.wallet.Close()
+			m.wallet = nil
+			// Clear app-level cached state (keep global daemon endpoint for switch detection)
+			m.cachedDaemonHealthy = false
+			m.cachedDaemonAddress = ""
+			m.Opts.DaemonAddress = m.cliDaemonAddress
+			m.regHintShown = false
+			m.clearPendingRegistration()
+		}
+	}
+	if quitting {
+		m.quitting = true
+	}
+}
+
+// dispatchPage routes the current message to the active page model, collecting
+// any resulting commands. It is extracted from Update to keep the message
+// dispatch switch parallel to the page model switch.
+func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch m.page {
 	case PageWelcome:
@@ -1153,7 +1168,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.send.ShouldComplete() {
 			m.send.Reset()
 			m.page = PageMain
-			m.updateWalletInfo()
+			cmds = append(cmds, m.updateWalletInfo())
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
 

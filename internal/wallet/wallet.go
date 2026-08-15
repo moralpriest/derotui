@@ -207,6 +207,15 @@ type Wallet struct {
 	syncMu        sync.Mutex
 	syncInFlight  bool
 
+	// Lifecycle control: Close cancels tracked background work and waits
+	// for it to finish before releasing the underlying wallet. This prevents
+	// background sync/registration goroutines from using a nil wallet.
+	ctx       context.Context
+	cancel    context.CancelFunc
+	wg        sync.WaitGroup
+	closeOnce sync.Once
+	closeMu   sync.Mutex
+
 	// Cache for transactions to avoid redundant syncs.
 	// Protected by txCacheMu - must hold lock when reading/writing cache fields
 	txCacheMu     sync.RWMutex
@@ -214,6 +223,47 @@ type Wallet struct {
 	txCacheHeight uint64
 	txCacheTopo   int64
 	txCacheTime   time.Time
+}
+
+// newWallet constructs a Wallet bound to the given network config and equips
+// it with a lifecycle context used to cancel background work on Close.
+func newWallet(w *walletapi.Wallet_Disk, file, network string, testnet, simulator bool) *Wallet {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Wallet{
+		wallet:    w,
+		file:      file,
+		network:   network,
+		testnet:   testnet,
+		simulator: simulator,
+		ctx:       ctx,
+		cancel:    cancel,
+	}
+}
+
+// Context returns the wallet's lifecycle context. It is cancelled when the
+// wallet is closed. Callers deriving operation contexts from it automatically
+// abort background work on Close.
+func (w *Wallet) Context() context.Context {
+	if w == nil || w.ctx == nil {
+		return context.Background()
+	}
+	return w.ctx
+}
+
+// trackBackground registers one unit of background work with the wallet's
+// WaitGroup. Returns false (without registering) if the wallet is closing or
+// already closed, so the caller can skip starting the goroutine. Holding
+// lifecycleMu during Add ensures no Add can race with Close's Wait.
+func (w *Wallet) trackBackground() bool {
+	w.closeMu.Lock()
+	defer w.closeMu.Unlock()
+	select {
+	case <-w.ctx.Done():
+		return false
+	default:
+	}
+	w.wg.Add(1)
+	return true
 }
 
 func (w *Wallet) syncWalletMemoryAsync() bool {
@@ -229,7 +279,18 @@ func (w *Wallet) syncWalletMemoryAsync() bool {
 	w.syncInFlight = true
 	w.syncMu.Unlock()
 
+	if !w.trackBackground() {
+		w.syncMu.Lock()
+		w.syncInFlight = false
+		w.syncMu.Unlock()
+		return false
+	}
+
+	// Capture the underlying wallet here so a Close that times out waiting for
+	// this goroutine cannot nil-deref w.wallet underneath us.
+	wlt := w.wallet
 	go func() {
+		defer w.wg.Done()
 		start := time.Now()
 		defer func() {
 			w.syncMu.Lock()
@@ -237,7 +298,13 @@ func (w *Wallet) syncWalletMemoryAsync() bool {
 			w.syncMu.Unlock()
 		}()
 
-		if err := w.wallet.Sync_Wallet_Memory_With_Daemon(); err != nil {
+		select {
+		case <-w.ctx.Done():
+			return
+		default:
+		}
+
+		if err := wlt.Sync_Wallet_Memory_With_Daemon(); err != nil {
 			log.Warn("wallet", "sync.warning", "Background wallet sync warning", "error", err.Error())
 			return
 		}
@@ -265,6 +332,25 @@ func shouldUseCachedTxsDuringSync(started, inFlight bool) bool {
 	return inFlight
 }
 
+// applyNetwork initializes the DERO network globals for the requested network
+// and returns the human-readable network name. Simulator can run in either
+// mainnet or testnet mode, so it passes its own testnet flag through.
+func applyNetwork(testnet, simulator bool) string {
+	network := "Mainnet"
+	if simulator {
+		network = "Simulator"
+		globals.Arguments["--testnet"] = testnet
+	} else if testnet {
+		network = "Testnet"
+		globals.Arguments["--testnet"] = true
+	} else {
+		// Ensure mainnet is properly initialized to avoid state bleeding between sessions
+		globals.Arguments["--testnet"] = false
+	}
+	globals.InitNetwork()
+	return network
+}
+
 // Open opens an existing wallet
 func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 	start := time.Now()
@@ -275,18 +361,7 @@ func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 	}
 
 	// Initialize globals BEFORE opening wallet so DERO library uses correct network
-	// Simulator can run in either mainnet or testnet mode
-	if simulator {
-		globals.Arguments["--testnet"] = testnet
-		globals.InitNetwork()
-	} else if testnet {
-		globals.Arguments["--testnet"] = true
-		globals.InitNetwork()
-	} else {
-		// Ensure mainnet is properly initialized to avoid state bleeding from previous sessions
-		globals.Arguments["--testnet"] = false
-		globals.InitNetwork()
-	}
+	network := applyNetwork(testnet, simulator)
 
 	w, err := walletapi.Open_Encrypted_Wallet(file, password)
 	if err != nil {
@@ -297,33 +372,12 @@ func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 	actualTestnet := testnet
 	actualSimulator := simulator
 
-	// Determine network name
-	network := "Mainnet"
-	if actualSimulator {
-		network = "Simulator"
-		// Simulator can be mainnet (dero1) or testnet (deto1)
-		// Don't override the actual testnet value
-	} else if actualTestnet {
-		network = "Testnet"
-	}
-
-	// Ensure globals match final network state - ALWAYS initialize, not just for testnet
-	// This fixes network state bleeding between sessions
-	globals.Arguments["--testnet"] = actualTestnet
-	globals.InitNetwork()
-
 	log.Debug("wallet", "open.network_set", "Network globals initialized",
 		"testnet", fmt.Sprintf("%t", actualTestnet),
 		"simulator", fmt.Sprintf("%t", actualSimulator),
 		"network", network)
 
-	wallet := &Wallet{
-		wallet:    w,
-		file:      file,
-		network:   network,
-		testnet:   actualTestnet,
-		simulator: actualSimulator,
-	}
+	wallet := newWallet(w, file, network, actualTestnet, actualSimulator)
 
 	duration := time.Since(start)
 	log.Info("wallet", "open.success", "Wallet opened successfully",
@@ -339,21 +393,7 @@ func Open(file, password string, testnet, simulator bool) (*Wallet, error) {
 // Create creates a new wallet
 func Create(file, password string, testnet, simulator bool) (*Wallet, string, error) {
 	// Initialize globals BEFORE wallet creation so DERO library uses correct network
-	// Simulator can run in either mainnet or testnet mode
-	network := "Mainnet"
-	if simulator {
-		network = "Simulator"
-		globals.Arguments["--testnet"] = testnet
-		globals.InitNetwork()
-	} else if testnet {
-		network = "Testnet"
-		globals.Arguments["--testnet"] = true
-		globals.InitNetwork()
-	} else {
-		// Ensure mainnet is properly initialized to avoid state bleeding
-		globals.Arguments["--testnet"] = false
-		globals.InitNetwork()
-	}
+	network := applyNetwork(testnet, simulator)
 
 	w, err := walletapi.Create_Encrypted_Wallet_Random(file, password)
 	if err != nil {
@@ -365,13 +405,7 @@ func Create(file, password string, testnet, simulator bool) (*Wallet, string, er
 		log.Warn("wallet", "create.backup_warning", "Failed to create wallet backup", "error", err.Error(), "file", filepath.Base(file))
 	}
 
-	return &Wallet{
-		wallet:    w,
-		file:      file,
-		network:   network,
-		testnet:   testnet,
-		simulator: simulator,
-	}, seed, nil
+	return newWallet(w, file, network, testnet, simulator), seed, nil
 }
 
 // ValidateSeed checks if a seed words is valid
@@ -448,21 +482,7 @@ func Restore(file, password, seed string, testnet, simulator bool) (*Wallet, err
 	}
 
 	// Initialize globals BEFORE wallet creation so DERO library uses correct network
-	// Simulator can run in either mainnet or testnet mode
-	network := "Mainnet"
-	if simulator {
-		network = "Simulator"
-		globals.Arguments["--testnet"] = testnet
-		globals.InitNetwork()
-	} else if testnet {
-		network = "Testnet"
-		globals.Arguments["--testnet"] = true
-		globals.InitNetwork()
-	} else {
-		// Ensure mainnet is properly initialized to avoid state bleeding
-		globals.Arguments["--testnet"] = false
-		globals.InitNetwork()
-	}
+	network := applyNetwork(testnet, simulator)
 
 	w, err := walletapi.Create_Encrypted_Wallet_From_Recovery_Words(file, password, seed)
 	if err != nil {
@@ -472,13 +492,7 @@ func Restore(file, password, seed string, testnet, simulator bool) (*Wallet, err
 		log.Warn("wallet", "restore.backup_warning", "Failed to create wallet backup", "error", err.Error(), "file", filepath.Base(file))
 	}
 
-	return &Wallet{
-		wallet:    w,
-		file:      file,
-		network:   network,
-		testnet:   testnet,
-		simulator: simulator,
-	}, nil
+	return newWallet(w, file, network, testnet, simulator), nil
 }
 
 // RestoreFromKey restores a wallet from a 64 character hex private key
@@ -495,21 +509,7 @@ func RestoreFromKey(file, password, hexKey string, testnet, simulator bool) (*Wa
 	}
 
 	// Initialize globals BEFORE wallet creation so DERO library uses correct network
-	// Simulator can run in either mainnet or testnet mode
-	network := "Mainnet"
-	if simulator {
-		network = "Simulator"
-		globals.Arguments["--testnet"] = testnet
-		globals.InitNetwork()
-	} else if testnet {
-		network = "Testnet"
-		globals.Arguments["--testnet"] = true
-		globals.InitNetwork()
-	} else {
-		// Ensure mainnet is properly initialized to avoid state bleeding
-		globals.Arguments["--testnet"] = false
-		globals.InitNetwork()
-	}
+	network := applyNetwork(testnet, simulator)
 
 	// Convert bytes to big.Int for BNRed
 	seed := new(big.Int).SetBytes(keyBytes)
@@ -523,13 +523,7 @@ func RestoreFromKey(file, password, hexKey string, testnet, simulator bool) (*Wa
 		log.Warn("wallet", "restore_key.backup_warning", "Failed to create wallet backup", "error", err.Error(), "file", filepath.Base(file))
 	}
 
-	return &Wallet{
-		wallet:    w,
-		file:      file,
-		network:   network,
-		testnet:   testnet,
-		simulator: simulator,
-	}, nil
+	return newWallet(w, file, network, testnet, simulator), nil
 }
 
 // GetDisk returns the underlying Wallet_Disk for use with XSWD server
@@ -537,9 +531,38 @@ func (w *Wallet) GetDisk() *walletapi.Wallet_Disk {
 	return w.wallet
 }
 
-// Close closes the wallet
+// Close closes the wallet. It cancels background sync/registration work and
+// waits for it to finish before releasing the underlying wallet, preventing
+// goroutines from operating on a nil wallet.
+// closeWaitTimeout bounds Close's wait for tracked background workers.
+// Workers can be stuck inside derohe's no-timeout RPCs or on its global
+// sync_multilock; never let that block session shutdown (and the UI thread
+// that runs it) indefinitely.
+const closeWaitTimeout = 10 * time.Second
+
 func (w *Wallet) Close() {
-	if w.wallet != nil {
+	if w.wallet == nil {
+		return
+	}
+	w.closeOnce.Do(func() {
+		// Hold closeMu so a concurrent trackBackground cannot Add new work
+		// after we observe the counter at zero. Workers only call Done, which
+		// does not need closeMu, so Wait never deadlocks here.
+		w.closeMu.Lock()
+		if w.cancel != nil {
+			w.cancel()
+		}
+		waitDone := make(chan struct{})
+		go func() {
+			w.wg.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-time.After(closeWaitTimeout):
+			log.Warn("wallet", "close.wait_timeout", "Timed out waiting for background tasks; closing anyway", "file", filepath.Base(w.file))
+		}
+		w.closeMu.Unlock()
 		if err := w.wallet.Save_Wallet(); err != nil {
 			log.Warn("wallet", "close.save_warning", "Failed to save wallet before close", "error", err.Error(), "file", filepath.Base(w.file))
 		}
@@ -548,7 +571,7 @@ func (w *Wallet) Close() {
 		if err := backupWalletFile(w.file); err != nil {
 			log.Warn("wallet", "close.backup_warning", "Failed to refresh wallet backup on close", "error", err.Error(), "file", filepath.Base(w.file))
 		}
-	}
+	})
 }
 
 func backupWalletFile(path string) error {
@@ -687,7 +710,9 @@ func (w *Wallet) GetInfo() WalletInfo {
 }
 
 // Register performs account registration and dispatches the registration transaction.
-func (w *Wallet) Register() (string, error) {
+// The supplied context bounds the proof-of-work search: it returns an error
+// (including ctx cancellation) instead of blocking forever if no valid PoW is found.
+func (w *Wallet) Register(ctx context.Context) (string, error) {
 	if w.wallet == nil {
 		return "", fmt.Errorf("wallet not open")
 	}
@@ -715,18 +740,28 @@ func (w *Wallet) Register() (string, error) {
 	done := make(chan struct{})
 	var stopOnce sync.Once
 
+	// Capture the underlying wallet before spawning: Close() may nil w.wallet
+	// on a timed-out wait while PoW workers are still searching.
+	wlt := w.wallet
+
 	for i := 0; i < workers; i++ {
-		go func() {
+		if !w.trackBackground() {
+			return "", fmt.Errorf("wallet is closing")
+		}
+		go func(i int) {
+			defer w.wg.Done()
 			// Small initial stagger to reduce lock contention on startup.
 			time.Sleep(time.Duration(i) * 5 * time.Millisecond)
 			for {
 				select {
 				case <-done:
 					return
+				case <-ctx.Done():
+					return
 				default:
 				}
 
-				regTx := w.wallet.GetRegistrationTX()
+				regTx := wlt.GetRegistrationTX()
 				hash := regTx.GetHash()
 				if hash[0] == 0 && hash[1] == 0 && hash[2] == 0 {
 					select {
@@ -740,15 +775,20 @@ func (w *Wallet) Register() (string, error) {
 				// to allow other goroutines and the OS scheduler to breathe.
 				runtime.Gosched()
 			}
-		}()
+		}(i)
 	}
 
-	regTx := <-resultCh
-	if err := w.wallet.SendTransaction(regTx); err != nil {
-		return "", fmt.Errorf("failed to dispatch registration transaction: %w", err)
+	select {
+	case regTx := <-resultCh:
+		stopOnce.Do(func() { close(done) })
+		if err := w.wallet.SendTransaction(regTx); err != nil {
+			return "", fmt.Errorf("failed to dispatch registration transaction: %w", err)
+		}
+		return regTx.GetHash().String(), nil
+	case <-ctx.Done():
+		stopOnce.Do(func() { close(done) })
+		return "", fmt.Errorf("registration cancelled: %w", ctx.Err())
 	}
-
-	return regTx.GetHash().String(), nil
 }
 
 // GetSeed returns the wallet seed
@@ -809,8 +849,14 @@ func (w *Wallet) GetTransactions(count int) []TransactionInfo {
 	// Sync with daemon in background to pick up outgoing transactions.
 	// To avoid freezes and lock contention, do not run Show_Transfers while
 	// a background sync is in flight.
+	//
+	// If derohe's own sync loop (started by SetOnlineMode) is already running,
+	// do NOT start a redundant tracked sync here: the untracked loop already
+	// calls Sync_Wallet_Memory_With_Daemon every ~5s, and a second concurrent
+	// sync duplicates that work and can block Close() (its no-timeout RPC call
+	// runs in a tracked goroutine that wg.Wait would await).
 	var scid crypto.Hash
-	if w.wallet.GetMode() && walletapi.IsDaemonOnline() {
+	if !w.wallet.GetMode() && walletapi.IsDaemonOnline() {
 		started := w.syncWalletMemoryAsync()
 		if shouldUseCachedTxsDuringSync(started, w.isSyncInFlight()) {
 			w.txCacheMu.RLock()
@@ -854,72 +900,7 @@ func (w *Wallet) GetTransactions(count int) []TransactionInfo {
 
 		// Try to extract data from the payload
 		// The payload may be zero-padded, so we need to trim trailing zeros
-		if len(e.Payload) > 0 {
-			// Trim trailing zeros (padding added by CheckPack)
-			payload := e.Payload
-			for len(payload) > 0 && payload[len(payload)-1] == 0 {
-				payload = payload[:len(payload)-1]
-			}
-
-			if len(payload) > 0 {
-				var args rpc.Arguments
-				if err := args.UnmarshalBinary(payload); err == nil {
-					if args.Has(rpc.RPC_COMMENT, rpc.DataString) {
-						message = args.Value(rpc.RPC_COMMENT, rpc.DataString).(string)
-					}
-					if args.Has(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64) {
-						valueTransfer = args.Value(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64).(uint64)
-					}
-					// Extract destination port if not already set
-					if destinationPort == 0 && args.Has(rpc.RPC_DESTINATION_PORT, rpc.DataUint64) {
-						destinationPort = args.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64)
-					}
-					// Extract source port if not already set
-					if sourcePort == 0 && args.Has(rpc.RPC_SOURCE_PORT, rpc.DataUint64) {
-						sourcePort = args.Value(rpc.RPC_SOURCE_PORT, rpc.DataUint64).(uint64)
-					}
-
-					// Reconstruct integrated address for display if payload has integrated args
-					if hasIntegratedArgs(args) {
-						if intAddr, err := w.reconstructIntegratedAddress(destination, args); err == nil {
-							destination = intAddr
-						}
-					}
-				} else {
-					// CBOR may have extraneous data - try to parse error and truncate
-					errStr := err.Error()
-					if idx := strings.Index(errStr, "starting at index "); idx != -1 {
-						var validLen int
-						fmt.Sscanf(errStr[idx:], "starting at index %d", &validLen)
-						if validLen > 0 && validLen < len(payload) {
-							// Retry with truncated payload
-							payload = payload[:validLen]
-							if err2 := args.UnmarshalBinary(payload); err2 == nil {
-								if args.Has(rpc.RPC_COMMENT, rpc.DataString) {
-									message = args.Value(rpc.RPC_COMMENT, rpc.DataString).(string)
-								}
-								if args.Has(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64) {
-									valueTransfer = args.Value(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64).(uint64)
-								}
-								if destinationPort == 0 && args.Has(rpc.RPC_DESTINATION_PORT, rpc.DataUint64) {
-									destinationPort = args.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64)
-								}
-								if sourcePort == 0 && args.Has(rpc.RPC_SOURCE_PORT, rpc.DataUint64) {
-									sourcePort = args.Value(rpc.RPC_SOURCE_PORT, rpc.DataUint64).(uint64)
-								}
-
-								// Reconstruct integrated address for display if payload has integrated args
-								if hasIntegratedArgs(args) {
-									if intAddr, err := w.reconstructIntegratedAddress(destination, args); err == nil {
-										destination = intAddr
-									}
-								}
-							}
-						}
-					}
-				}
-			}
-		}
+		message, valueTransfer, destinationPort, sourcePort, destination = w.parseTransferPayload(e.Payload, destination, destinationPort, sourcePort)
 
 		// Some outgoing/incoming transfers can report e.Amount as 0 while payload carries RPC_VALUE_TRANSFER.
 		// Use the payload value so Recent Activity and History show actual transfer amounts.
@@ -972,6 +953,84 @@ func (w *Wallet) InvalidateTxCache() {
 	w.txCacheTopo = 0
 	w.txCacheTime = time.Time{}
 	w.txCacheMu.Unlock()
+}
+
+// parseTransferPayload extracts message, value transfer, and ports from a
+// transfer payload. The payload may be zero-padded, so trailing zeros are
+// trimmed. Uses comma-ok type assertions to avoid panics on malformed args.
+// Returns base message/valueTransfer/ports, and updates destination with a
+// reconstructed integrated address when the payload carries integrated args.
+func (w *Wallet) parseTransferPayload(payload []byte, destination string, destinationPort, sourcePort uint64) (string, uint64, uint64, uint64, string) {
+	if len(payload) == 0 {
+		return "", 0, destinationPort, sourcePort, destination
+	}
+
+	// Trim trailing zeros (padding added by CheckPack)
+	for len(payload) > 0 && payload[len(payload)-1] == 0 {
+		payload = payload[:len(payload)-1]
+	}
+	if len(payload) == 0 {
+		return "", 0, destinationPort, sourcePort, destination
+	}
+
+	var args rpc.Arguments
+	if err := args.UnmarshalBinary(payload); err != nil {
+		// CBOR may have extraneous data - retry with truncated payload
+		payload = truncatePayloadOnCborError(payload, err)
+		if len(payload) == 0 {
+			return "", 0, destinationPort, sourcePort, destination
+		}
+		if args.UnmarshalBinary(payload) != nil {
+			return "", 0, destinationPort, sourcePort, destination
+		}
+	}
+
+	var message string
+	var valueTransfer uint64
+	// Comma-ok to avoid panics on unexpected arg value types.
+	if v, ok := args.Value(rpc.RPC_COMMENT, rpc.DataString).(string); ok {
+		message = v
+	}
+	if v, ok := args.Value(rpc.RPC_VALUE_TRANSFER, rpc.DataUint64).(uint64); ok {
+		valueTransfer = v
+	}
+	// Extract destination port if not already set
+	if destinationPort == 0 {
+		if v, ok := args.Value(rpc.RPC_DESTINATION_PORT, rpc.DataUint64).(uint64); ok {
+			destinationPort = v
+		}
+	}
+	// Extract source port if not already set
+	if sourcePort == 0 {
+		if v, ok := args.Value(rpc.RPC_SOURCE_PORT, rpc.DataUint64).(uint64); ok {
+			sourcePort = v
+		}
+	}
+
+	// Reconstruct integrated address for display if payload has integrated args
+	if hasIntegratedArgs(args) {
+		if intAddr, err := w.reconstructIntegratedAddress(destination, args); err == nil {
+			destination = intAddr
+		}
+	}
+
+	return message, valueTransfer, destinationPort, sourcePort, destination
+}
+
+// truncatePayloadOnCborError attempts to recover from a CBOR decode error by
+// retrying with the payload truncated at the reported extraneous-data index.
+// Returns the usable prefix, or nil if it cannot be recovered.
+func truncatePayloadOnCborError(payload []byte, err error) []byte {
+	errStr := err.Error()
+	idx := strings.Index(errStr, "starting at index ")
+	if idx == -1 {
+		return nil
+	}
+	var validLen int
+	if _, scanErr := fmt.Sscanf(errStr[idx:], "starting at index %d", &validLen); scanErr != nil || validLen <= 0 || validLen >= len(payload) {
+		return nil
+	}
+	return payload[:validLen]
 }
 
 // Transfer sends DERO to a destination
@@ -1151,7 +1210,10 @@ func isPowerOf2(n int) bool {
 	return n > 0 && (n&(n-1)) == 0
 }
 
-func isValidUsernameCandidate(name string) bool {
+// IsValidUsernameCandidate reports whether name looks like a DERO name-service
+// username (alphanumeric plus . _ -, no @ prefix, <= 64 chars) rather than a
+// full address.
+func IsValidUsernameCandidate(name string) bool {
 	name = strings.TrimSpace(name)
 	if name == "" || strings.HasPrefix(name, "@") || len(name) > 64 {
 		return false
@@ -1177,7 +1239,7 @@ func resolveTransferDestination(destination string, parseFn func(string) (*rpc.A
 		return destination, addr, nil
 	}
 
-	if !isValidUsernameCandidate(destination) {
+	if !IsValidUsernameCandidate(destination) {
 		return "", nil, fmt.Errorf("invalid DERO address or username")
 	}
 

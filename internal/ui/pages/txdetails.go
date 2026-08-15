@@ -4,7 +4,6 @@ package pages
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -50,14 +49,12 @@ func (t TxDetailsModel) Update(msg tea.Msg) (TxDetailsModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, pageEscKeys):
-			log.Printf("[DEBUG txdetails] Closed transaction details")
 			t.cancelled = true
 		case key.Matches(msg, txDetailsCopyTxIDKeys):
 			// Copy TxID
 			if t.tx.TxID != "" {
 				clipboard.WriteAll(t.tx.TxID)
 				t.copyMessage = "TxID copied!"
-				log.Printf("[DEBUG txdetails] Copied TxID")
 			} else {
 				t.copyMessage = "No TxID to copy"
 			}
@@ -65,13 +62,11 @@ func (t TxDetailsModel) Update(msg tea.Msg) (TxDetailsModel, tea.Cmd) {
 			// Copy Block Height
 			clipboard.WriteAll(fmt.Sprintf("%d", t.tx.Height))
 			t.copyMessage = "Block height copied!"
-			log.Printf("[DEBUG txdetails] Copied block height")
 		case key.Matches(msg, txDetailsCopySenderKeys):
 			// Copy Sender
 			if t.tx.Sender != "" {
 				clipboard.WriteAll(t.tx.Sender)
 				t.copyMessage = "Sender copied!"
-				log.Printf("[DEBUG txdetails] Copied sender")
 			} else {
 				t.copyMessage = "No sender to copy"
 			}
@@ -80,7 +75,6 @@ func (t TxDetailsModel) Update(msg tea.Msg) (TxDetailsModel, tea.Cmd) {
 			if t.tx.Destination != "" {
 				clipboard.WriteAll(t.tx.Destination)
 				t.copyMessage = "Destination copied!"
-				log.Printf("[DEBUG txdetails] Copied destination")
 			} else {
 				t.copyMessage = "No destination to copy"
 			}
@@ -89,7 +83,6 @@ func (t TxDetailsModel) Update(msg tea.Msg) (TxDetailsModel, tea.Cmd) {
 			if t.tx.Proof != "" {
 				clipboard.WriteAll(t.tx.Proof)
 				t.copyMessage = "Proof copied!"
-				log.Printf("[DEBUG txdetails] Copied proof")
 			} else {
 				t.copyMessage = "No proof to copy"
 			}
@@ -98,7 +91,6 @@ func (t TxDetailsModel) Update(msg tea.Msg) (TxDetailsModel, tea.Cmd) {
 			if t.tx.Message != "" {
 				clipboard.WriteAll(t.tx.Message)
 				t.copyMessage = "Message copied!"
-				log.Printf("[DEBUG txdetails] Copied message")
 			} else {
 				t.copyMessage = "No message to copy"
 			}
@@ -107,11 +99,9 @@ func (t TxDetailsModel) Update(msg tea.Msg) (TxDetailsModel, tea.Cmd) {
 			if t.tx.DestinationPort != 0 {
 				clipboard.WriteAll(fmt.Sprintf("%d", t.tx.DestinationPort))
 				t.copyMessage = "Destination Port copied!"
-				log.Printf("[DEBUG txdetails] Copied destination port")
 			} else if t.tx.SourcePort != 0 {
 				clipboard.WriteAll(fmt.Sprintf("%d", t.tx.SourcePort))
 				t.copyMessage = "Source Port copied!"
-				log.Printf("[DEBUG txdetails] Copied source port")
 			} else {
 				t.copyMessage = "No port to copy"
 			}

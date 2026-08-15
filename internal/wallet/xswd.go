@@ -11,7 +11,9 @@ import (
 	"github.com/deroproject/derohe/walletapi/xswd"
 )
 
-const xswdDialogTimeout = 30 * time.Second
+// XSWDDialogTimeout is how long the TUI may show an auth/permission dialog
+// before the server-side handler times out and denies the request.
+const XSWDDialogTimeout = 30 * time.Second
 
 // XSWDAppInfo contains dApp info for the TUI authorization dialog
 type XSWDAppInfo struct {
@@ -93,7 +95,7 @@ func StartXSWD(w *walletapi.Wallet_Disk, sender MsgSender) *XSWDBridge {
 				return result
 			case <-app.OnClose:
 				return false
-			case <-time.After(xswdDialogTimeout):
+			case <-time.After(XSWDDialogTimeout):
 				log.Warn("xswd", "auth.timeout", "Authorization request timed out", "app", app.Name)
 				return false
 			}
@@ -113,7 +115,7 @@ func StartXSWD(w *walletapi.Wallet_Disk, sender MsgSender) *XSWDBridge {
 				return xswd.Permission(result)
 			case <-app.OnClose:
 				return xswd.Deny
-			case <-time.After(xswdDialogTimeout):
+			case <-time.After(XSWDDialogTimeout):
 				log.Warn("xswd", "perm.timeout", "Permission request timed out", "app", app.Name, "method", req.Method())
 				return xswd.Deny
 			}
