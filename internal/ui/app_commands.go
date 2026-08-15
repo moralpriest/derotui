@@ -512,9 +512,27 @@ func (m *Model) changeWalletPassword(currentPass, newPass string) tea.Cmd {
 	}
 }
 
+// preferredDaemonAddress returns the daemon the user explicitly selected or
+// previously used, or "" to let ConnectToLocalDaemonFast fall back to the
+// per-network local default. Priority: explicit /connect selection, then the
+// CLI flag, then the daemon the last wallet session used.
+func (m *Model) preferredDaemonAddress() string {
+	if m.stickyDaemonAddress != "" {
+		return m.stickyDaemonAddress
+	}
+	if m.Opts.DaemonAddress != "" && m.Opts.DaemonAddress != "Not connected" {
+		return m.Opts.DaemonAddress
+	}
+	if m.lastWalletDaemon != "" && m.lastWalletDaemon != "Not connected" {
+		return m.lastWalletDaemon
+	}
+	return ""
+}
+
 // connectWalletToDaemonAsync connects the wallet to daemon asynchronously.
 func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
 	w := m.wallet
+	preferred := m.preferredDaemonAddress()
 	return func() tea.Msg {
 		if w == nil {
 			return walletDaemonConnectedMsg{connected: false, err: "Wallet not open"}
@@ -531,7 +549,7 @@ func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
 		}
 		resultCh := make(chan connectResult, 1)
 		go func() {
-			connected, errMsg := w.ConnectToLocalDaemonFast(false, "")
+			connected, errMsg := w.ConnectToLocalDaemonFast(false, preferred)
 			resultCh <- connectResult{connected: connected, errMsg: errMsg}
 		}()
 

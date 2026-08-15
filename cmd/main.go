@@ -131,6 +131,7 @@ func main() {
 
 	m := ui.NewModel()
 	m.Opts = opts
+	m.SetCLIDaemonAddress(opts.DaemonAddress)
 	// Propagate the build-injected version (via Makefile ldflags) into the TUI
 	ui.Version = version
 	m.SetStartupFlowSet(m.ApplyCLIStartupFlags())

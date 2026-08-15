@@ -257,6 +257,14 @@ func (m *Model) SetProgram(p wallet.MsgSender) {
 	m.program = p
 }
 
+// SetCLIDaemonAddress records the daemon address provided via CLI flags.
+// It is set before the program runs (Init's value receiver cannot persist
+// model mutations) so shutdownSession can restore the CLI value after a
+// /connect overwrites m.Opts.DaemonAddress.
+func (m *Model) SetCLIDaemonAddress(addr string) {
+	m.cliDaemonAddress = addr
+}
+
 func applyFilePickerTheme(fp *filepicker.Model) {
 	s := filepicker.DefaultStyles()
 	s.Cursor = lipgloss.NewStyle().Foreground(styles.ColorPrimary).Bold(true)
@@ -275,7 +283,6 @@ func applyFilePickerTheme(fp *filepicker.Model) {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	m.cliDaemonAddress = m.Opts.DaemonAddress
 	cmds := []tea.Cmd{
 		m.filePicker.Init(),
 		m.checkDaemonStatus(), // Check daemon on startup
@@ -622,7 +629,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			derolog.Error("wallet", "open.failed", "Failed to open wallet", "error", msg.err.Error())
 			m.password.SetError(msg.err.Error())
 		} else {
-			m.lastWalletDaemon = ""
+			// Keep lastWalletDaemon so preferredDaemonAddress can reuse it on
+			// the next connect; do not wipe it here (was causing close/reopen
+			// to fall back to the localhost daemon).
 			network := "mainnet"
 			if msg.wallet.IsTestnet() {
 				network = "testnet"
@@ -672,7 +681,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.password.SetError(msg.err.Error())
 		} else {
-			m.lastWalletDaemon = ""
 			m.wallet = msg.wallet
 			m.regHintShown = false
 			m.clearPendingRegistration()
@@ -731,7 +739,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.seed.SetError(msg.err.Error())
 		} else {
-			m.lastWalletDaemon = ""
 			m.wallet = msg.wallet
 			m.regHintShown = false
 			m.clearPendingRegistration()
