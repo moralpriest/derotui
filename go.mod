@@ -9,7 +9,7 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/atotto/clipboard v0.1.4
-	github.com/civilware/epoch v0.0.0-00010101000000-000000000000
+	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/creachadair/jrpc2 v0.35.4
 	github.com/deroproject/derohe v0.0.0-20240405032004-bd300c0e086e
 	github.com/gorilla/websocket v1.5.3
@@ -77,4 +77,4 @@ require (
 
 replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260813143921-898730ea9b95
 
-replace github.com/civilware/epoch => /home/priest/Projects/epoch
+replace github.com/civilware/epoch => github.com/moralpriest/epoch v0.0.0-20260812013238-2104b271e52a
