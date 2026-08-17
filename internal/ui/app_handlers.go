@@ -390,9 +390,8 @@ func (m *Model) handleSeedAction() tea.Cmd {
 
 		// Displaying seed (after creation or from dashboard)
 		m.page = PageMain
-		m.updateWalletInfo()
 		// Note: m.tickCmd() is already running from Init(); do not add duplicate tickers
-		return m.setWindowTitleCmd()
+		return tea.Batch(m.updateWalletInfo(), m.setWindowTitleCmd())
 	}
 
 	return nil
@@ -532,12 +531,12 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 			m.xswdBridge.Stop()
 			m.xswdBridge = nil
 			m.dashboard.SetXSWDRunning(false)
-			m.dashboard.SetFlashMessage("XSWD server stopped", true)
+			m.dashboard.SetFlashMessage("XSWD + EPOCH stopped", true)
 		} else {
 			// Start XSWD
 			derolog.Info("xswd", "start.request", "Starting XSWD server")
 			m.dashboard.SetXSWDRunning(true) // Optimistic - will correct if fails
-			m.dashboard.SetFlashMessage("XSWD server starting...", true)
+			m.dashboard.SetFlashMessage("XSWD + EPOCH starting...", true)
 			return tea.Batch(m.startXSWDCmd(), cmd)
 		}
 	}
@@ -552,16 +551,18 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 	}
 	if m.dashboard.WantDonate() {
 		m.dashboard.ResetActions()
-		if m.wallet != nil {
-			info := m.wallet.GetInfo()
-			if !info.IsRegistered {
-				m.dashboard.SetFlashMessage("Register wallet first ([G])", false)
-				return cmd
-			}
+		if m.wallet == nil {
+			m.dashboard.SetFlashMessage("No wallet open", false)
+			return cmd
+		}
+		info := m.wallet.GetInfo()
+		if !info.IsRegistered {
+			m.dashboard.SetFlashMessage("Register wallet first ([G])", false)
+			return cmd
 		}
 		m.send = pages.NewSend()
 		m.send.SetSimulator(m.wallet.IsSimulator())
-		m.send.SetBalance(m.wallet.GetInfo().Balance)
+		m.send.SetBalance(info.Balance)
 		m.send.SetAddress(donationAddress)
 		m.page = PageSend
 		return tea.Batch(m.send.Init(), m.setWindowTitleCmd())

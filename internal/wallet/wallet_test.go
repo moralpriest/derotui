@@ -3,6 +3,7 @@
 package wallet
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 )
 
@@ -407,4 +409,107 @@ func containsSubstring(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// TestWalletContextCancelsBackground verifies that cancelling the wallet
+// lifecycle context (as Close does) stops tracked background work and makes
+// trackBackground refuse new goroutines.
+func TestWalletContextCancelsBackground(t *testing.T) {
+	w := newWallet(nil, "test.wallet", "Mainnet", false, false)
+	if w == nil {
+		t.Fatal("expected non-nil wallet")
+	}
+
+	if !w.trackBackground() {
+		t.Fatal("expected trackBackground to accept work before close")
+	}
+	w.wg.Done() // balance the Add from the tracked goroutine we never started
+
+	// Simulate Close cancelling the lifecycle context.
+	if w.cancel == nil {
+		t.Fatal("expected cancel func to be populated")
+	}
+	w.cancel()
+
+	select {
+	case <-w.Context().Done():
+	default:
+		t.Fatal("expected Context to be cancelled after wallet close")
+	}
+	if w.trackBackground() {
+		t.Fatal("expected trackBackground to refuse work after close")
+	}
+}
+
+// TestRegisterRequiresOpenWallet verifies Register returns a clear error when
+// no wallet is open instead of blocking or panicking.
+func TestRegisterRequiresOpenWallet(t *testing.T) {
+	w := &Wallet{}
+	_, err := w.Register(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "wallet not open") {
+		t.Fatalf("expected 'wallet not open' error, got: %v", err)
+	}
+}
+
+// TestParseTransferPayload verifies message/port/value transfer extraction
+// from a transaction payload, including zero-padding handling.
+func TestParseTransferPayload(t *testing.T) {
+	// Build a payload identical in shape to CheckPack output: args followed
+	// by trailing zero padding.
+	args := rpc.Arguments{
+		{Name: rpc.RPC_COMMENT, DataType: rpc.DataString, Value: "hello world"},
+		{Name: rpc.RPC_VALUE_TRANSFER, DataType: rpc.DataUint64, Value: uint64(12345)},
+	}
+	packed, err := args.MarshalBinary()
+	if err != nil {
+		t.Fatalf("failed to marshal test args: %v", err)
+	}
+	padded := append(packed, make([]byte, 16)...) // trailing zero padding
+
+	w := &Wallet{}
+	message, value, destPort, srcPort, _ := w.parseTransferPayload(padded, "dero1receiver", 0, 0)
+	if message != "hello world" {
+		t.Errorf("message = %q, want %q", message, "hello world")
+	}
+	if value != 12345 {
+		t.Errorf("value transfer = %d, want 12345", value)
+	}
+	if destPort != 0 || srcPort != 0 {
+		t.Errorf("expected zero ports (not in args), got dest=%d src=%d", destPort, srcPort)
+	}
+
+	// Empty payload -> no panic, no extraction
+	message, value, destPort, srcPort, dest := w.parseTransferPayload(nil, "dero1receiver", 5, 6)
+	if message != "" || value != 0 || destPort != 5 || srcPort != 6 || dest != "dero1receiver" {
+		t.Errorf("empty payload mishandled: msg=%q val=%d destPort=%d srcPort=%d dest=%q", message, value, destPort, srcPort, dest)
+	}
+}
+
+// TestApplyNetwork verifies network selection returns the correct display name
+// and initializes the DERO globals for the requested network.
+func TestApplyNetwork(t *testing.T) {
+	tests := []struct {
+		name       string
+		testnet    bool
+		simulator  bool
+		want       string
+		wantTestnt bool
+	}{
+		{name: "mainnet", testnet: false, simulator: false, want: "Mainnet", wantTestnt: false},
+		{name: "testnet", testnet: true, simulator: false, want: "Testnet", wantTestnt: true},
+		{name: "simulator mainnet mode", testnet: false, simulator: true, want: "Simulator", wantTestnt: false},
+		{name: "simulator testnet mode", testnet: true, simulator: true, want: "Simulator", wantTestnt: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := applyNetwork(tt.testnet, tt.simulator)
+			if got != tt.want {
+				t.Fatalf("applyNetwork() = %q, want %q", got, tt.want)
+			}
+			if v, ok := globals.Arguments["--testnet"].(bool); !ok || v != tt.wantTestnt {
+				t.Fatalf("globals --testnet = %v, want %v", globals.Arguments["--testnet"], tt.wantTestnt)
+			}
+		})
+	}
 }

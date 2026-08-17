@@ -4,7 +4,6 @@ package pages
 
 import (
 	"fmt"
-	"log"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -71,23 +70,18 @@ func (m XSWDAuthModel) Update(msg tea.Msg) (XSWDAuthModel, tea.Cmd) {
 		case key.Matches(msg, xswdAuthAcceptKeys):
 			m.confirmed = true
 			m.accepted = true
-			log.Printf("[DEBUG xswd-auth] User accepted connection from %s", m.appName)
 		case key.Matches(msg, xswdAuthRejectKeys):
 			m.confirmed = true
 			m.accepted = false
-			log.Printf("[DEBUG xswd-auth] User rejected connection from %s", m.appName)
 		case key.Matches(msg, pageEnterKeys):
 			m.confirmed = true
 			m.accepted = m.selected == 0
 			if m.accepted {
-				log.Printf("[DEBUG xswd-auth] User accepted connection from %s (via enter)", m.appName)
 			} else {
-				log.Printf("[DEBUG xswd-auth] User rejected connection from %s (via enter)", m.appName)
 			}
 		case key.Matches(msg, pageEscKeys):
 			m.confirmed = true
 			m.accepted = false
-			log.Printf("[DEBUG xswd-auth] User rejected connection from %s (via esc)", m.appName)
 		}
 	}
 
@@ -319,31 +313,24 @@ func (m XSWDPermModel) Update(msg tea.Msg) (XSWDPermModel, tea.Cmd) {
 			m.selected = 0
 			m.confirmed = true
 			m.result = 1 // Allow
-			log.Printf("[DEBUG xswd-perm] User granted Allow for %s.%s", m.appName, m.method)
 		case key.Matches(msg, xswdPermDenyKeys):
 			m.selected = 1
 			m.confirmed = true
 			m.result = 2 // Deny
-			log.Printf("[DEBUG xswd-perm] User denied Deny for %s.%s", m.appName, m.method)
 		case key.Matches(msg, xswdPermAlwaysAllowKeys):
 			m.selected = 2
 			m.confirmed = true
 			m.result = 3 // AlwaysAllow
-			log.Printf("[DEBUG xswd-perm] User granted AlwaysAllow for %s.%s", m.appName, m.method)
 		case key.Matches(msg, xswdPermAlwaysDenyKeys):
 			m.selected = 3
 			m.confirmed = true
 			m.result = 4 // AlwaysDeny
-			log.Printf("[DEBUG xswd-perm] User denied AlwaysDeny for %s.%s", m.appName, m.method)
 		case key.Matches(msg, pageEnterKeys):
 			m.confirmed = true
 			m.result = m.selected + 1 // Allow=1, Deny=2, AlwaysAllow=3, AlwaysDeny=4
-			perms := []string{"", "Allow", "Deny", "AlwaysAllow", "AlwaysDeny"}
-			log.Printf("[DEBUG xswd-perm] User granted %s for %s.%s (via enter)", perms[m.result], m.appName, m.method)
 		case key.Matches(msg, pageEscKeys):
 			m.confirmed = true
 			m.result = 2 // Deny
-			log.Printf("[DEBUG xswd-perm] User denied Deny for %s.%s (via esc)", m.appName, m.method)
 		}
 	}
 

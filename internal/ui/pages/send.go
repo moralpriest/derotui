@@ -7,7 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"charm.land/bubbles/v2/key"
@@ -16,6 +15,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/components"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
+	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
 )
@@ -26,19 +26,7 @@ func isNumericChar(r rune) bool {
 }
 
 func isValidUsernameCandidate(name string) bool {
-	name = strings.TrimSpace(name)
-	if name == "" || strings.HasPrefix(name, "@") || len(name) > 64 {
-		return false
-	}
-
-	for _, r := range name {
-		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '.' || r == '_' || r == '-' {
-			continue
-		}
-		return false
-	}
-
-	return true
+	return wallet.IsValidUsernameCandidate(name)
 }
 
 // abs returns the absolute value of an integer

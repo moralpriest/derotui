@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"strconv"
 	"strings"
 
@@ -112,7 +111,6 @@ func (s SeedModel) Update(msg tea.Msg) (SeedModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		// Handle escape first - always works
 		if key.Matches(msg, pageEscKeys) {
-			log.Printf("[DEBUG seed] Cancelled seed %s", map[SeedMode]string{SeedModeDisplay: "display", SeedModeInput: "input"}[s.Mode])
 			s.cancelled = true
 			return s, nil
 		}
@@ -121,7 +119,6 @@ func (s SeedModel) Update(msg tea.Msg) (SeedModel, tea.Cmd) {
 		if key.Matches(msg, pageCopyKeys) && s.Mode == SeedModeDisplay {
 			if err := clipboard.WriteAll(s.Seed); err == nil {
 				s.copied = true
-				log.Printf("[DEBUG seed] Copied seed to clipboard")
 			}
 			return s, nil
 		}
@@ -130,25 +127,21 @@ func (s SeedModel) Update(msg tea.Msg) (SeedModel, tea.Cmd) {
 		if key.Matches(msg, pageEnterKeys) {
 			if s.Mode == SeedModeDisplay {
 				s.confirmed = true
-				log.Printf("[DEBUG seed] Confirmed seed display")
 				return s, nil
 			}
 			// Input mode - validate and confirm
 			seed := normalizeSeed(s.textarea.Value())
 			if seed == "" {
 				s.error = "Please enter your seed words"
-				log.Printf("[DEBUG seed] Validation failed: empty seed")
 				return s, nil
 			}
 			// Validate the seed using the wallet validation
 			if err := wallet.ValidateSeed(seed); err != nil {
 				s.error = err.Error()
-				log.Printf("[DEBUG seed] Validation failed: %d words invalid", len(strings.Fields(seed)))
 				return s, nil
 			}
 			s.Seed = seed
 			s.confirmed = true
-			log.Printf("[DEBUG seed] Seed input confirmed (25 words)")
 			return s, nil
 		}
 

@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -99,13 +98,11 @@ func (q QRCodeModel) Update(msg tea.Msg) (QRCodeModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, pageEscKeys), key.Matches(msg, pageEnterKeys):
-			log.Printf("[DEBUG qrcode] Closed QR code view")
 			q.cancelled = true
 			return q, nil
 		case key.Matches(msg, pageCopyKeys):
 			if err := clipboard.WriteAll(q.Address); err == nil {
 				q.copied = true
-				log.Printf("[DEBUG qrcode] Copied address to clipboard")
 			}
 			return q, nil
 		}

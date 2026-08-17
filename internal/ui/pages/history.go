@@ -4,7 +4,6 @@ package pages
 
 import (
 	"fmt"
-	"log"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -58,12 +57,10 @@ func (h HistoryModel) Update(msg tea.Msg) (HistoryModel, tea.Cmd) {
 		switch {
 		case key.Matches(msg, pageEnterKeys):
 			if len(h.Transactions) > 0 {
-				log.Printf("[DEBUG History] Enter pressed - WantDetails for tx %d", h.cursor)
 				h.wantDetails = true
 			}
 		case key.Matches(msg, historyExportKeys):
 			if len(h.Transactions) > 0 {
-				log.Printf("[DEBUG History] Export pressed - WantExport")
 				h.wantExport = true
 			}
 		case key.Matches(msg, pageUpKeys):

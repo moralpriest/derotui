@@ -3,7 +3,6 @@
 package pages
 
 import (
-	"log"
 	"path/filepath"
 
 	"charm.land/bubbles/v2/key"
@@ -70,23 +69,17 @@ func (n NetworkModel) Update(msg tea.Msg) (NetworkModel, tea.Cmd) {
 				n.selected++
 			}
 		case key.Matches(msg, networkMainnetKeys):
-			log.Printf("[DEBUG network] Selected Mainnet")
 			n.selected = 0
 			n.confirmed = true
 		case key.Matches(msg, networkTestnetKeys):
-			log.Printf("[DEBUG network] Selected Testnet")
 			n.selected = 1
 			n.confirmed = true
 		case key.Matches(msg, networkSimulatorKeys):
-			log.Printf("[DEBUG network] Selected Simulator")
 			n.selected = 2
 			n.confirmed = true
 		case key.Matches(msg, pageEnterKeys):
-			networks := []string{"Mainnet", "Testnet", "Simulator"}
-			log.Printf("[DEBUG network] Confirmed selection: %s", networks[n.selected])
 			n.confirmed = true
 		case key.Matches(msg, pageEscKeys):
-			log.Printf("[DEBUG network] Cancelled network selection")
 			n.cancelled = true
 		}
 	}

@@ -4,7 +4,6 @@ package pages
 
 import (
 	"fmt"
-	"log"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -144,7 +143,6 @@ func (i IntegratedAddrModel) Update(msg tea.Msg) (IntegratedAddrModel, tea.Cmd) 
 			if i.generated && i.result != "" {
 				if err := clipboard.WriteAll(i.result); err == nil {
 					i.copied = true
-					log.Printf("[DEBUG IntegratedAddr] Copied integrated address to clipboard")
 				}
 			}
 		// NEW: 'Y' key to view QR code of generated address
@@ -369,7 +367,6 @@ func (i *IntegratedAddrModel) generate() {
 	i.generated = true
 	i.copied = false
 	i.wantViewQR = true // Auto-trigger QR view after successful generation
-	log.Printf("[DEBUG IntegratedAddr] Generated integrated address (len=%d)", len(i.result))
 }
 
 func (i *IntegratedAddrModel) nextFocus() {
