@@ -15,6 +15,7 @@ require (
 	github.com/deroproject/derohe v0.0.0-20240405032004-bd300c0e086e
 	github.com/gorilla/websocket v1.5.3
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
+	go-miner v0.0.0-00010101000000-000000000000
 	golang.org/x/sys v0.47.0
 )
 
@@ -91,3 +92,5 @@ replace github.com/creachadair/jrpc2 => github.com/creachadair/jrpc2 v0.35.4
 replace github.com/lesismal/nbio => github.com/lesismal/nbio v1.2.20
 
 replace github.com/lesismal/llib => github.com/lesismal/llib v1.1.6
+
+replace go-miner => ../Dirtybird-Go-Miner

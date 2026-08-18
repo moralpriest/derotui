@@ -22,10 +22,11 @@ const (
 
 // Config holds application configuration
 type Config struct {
-	LastWallet     string                   `json:"last_wallet"`
-	WalletNetworks map[string]WalletNetwork `json:"wallet_networks"` // wallet path -> network
-	Theme          string                   `json:"theme"`           // selected theme ID
-	Daemon         DaemonSettings           `json:"daemon"`
+	LastWallet        string                   `json:"last_wallet"`
+	LastMiningAddress string                   `json:"last_mining_address"` // public payout address for embedded miner
+	WalletNetworks    map[string]WalletNetwork `json:"wallet_networks"`     // wallet path -> network
+	Theme             string                   `json:"theme"`               // selected theme ID
+	Daemon            DaemonSettings           `json:"daemon"`
 }
 
 // DaemonSettings holds local daemon launch settings.
@@ -269,6 +270,24 @@ func SetLastWallet(path string) error {
 	cfg := loadUnlocked()
 	cfg.LastWallet = path
 	return saveUnlocked(cfg)
+}
+
+// SetLastMiningAddress saves the last used mining payout address.
+// The address is public (receive-only) and does not require an unlocked wallet.
+func SetLastMiningAddress(address string) error {
+	if strings.TrimSpace(address) == "" {
+		return nil
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg := loadUnlocked()
+	cfg.LastMiningAddress = strings.TrimSpace(address)
+	return saveUnlocked(cfg)
+}
+
+// GetLastMiningAddress returns the last used mining payout address (empty if none).
+func GetLastMiningAddress() string {
+	return strings.TrimSpace(Load().LastMiningAddress)
 }
 
 // GetLastWallet returns the last used wallet path

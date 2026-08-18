@@ -20,6 +20,7 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	derolog "github.com/deroproject/dero-wallet-cli/internal/log"
 	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
+	minerservice "github.com/deroproject/dero-wallet-cli/internal/services/miner"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
@@ -168,6 +169,7 @@ type Model struct {
 	daemonSettings pages.DaemonSettingsModel
 	miner          pages.MinerModel
 	integratedAddr pages.IntegratedAddrModel
+	palette        pages.PaletteModel
 
 	// State flags
 	isCreating           bool
@@ -190,6 +192,9 @@ type Model struct {
 
 	// QR return page tracking
 	qrReturnPage Page // page to return to after QR code view
+
+	// Miner return page tracking (dashboard vs welcome)
+	minerReturnPage Page
 
 	// Cached daemon status (from welcome page checks)
 	cachedDaemonHealthy bool
@@ -224,6 +229,7 @@ type Model struct {
 	lastTxRefreshAt    time.Time
 	daemonManager      *daemonservice.Manager
 	embeddedDaemon     *daemonservice.EmbeddedDaemon
+	rpcMiner           minerservice.RPCBackend
 	daemonManagedSince time.Time
 	lastEmbeddedError  string
 }
@@ -261,6 +267,7 @@ func NewModel() Model {
 		daemonLogs:       pages.NewDaemonLogs(),
 		daemonSettings:   pages.NewDaemonSettings(config.GetDaemonSettings()),
 		miner:            pages.NewMiner(),
+		palette:          pages.NewPalette(),
 		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
 	}
@@ -432,6 +439,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))) {
 			m.shutdownSession(true)
 			return m, tea.Quit
+		}
+
+		// Global command palette: when open, it consumes all keys.
+		if m.palette.IsOpen() {
+			var paletteCmd tea.Cmd
+			m.palette, paletteCmd = m.palette.Update(msg)
+			cmds = append(cmds, paletteCmd)
+			// Dispatch any command the user selected (palette closes itself).
+			if m.palette.Action() != pages.ActionNone {
+				cmds = append(cmds, m.handlePaletteAction())
+			}
+			return m, tea.Batch(cmds...)
+		}
+
+		// "/" opens the command palette on eligible pages.
+		if keyStr == "/" && paletteEnabled(m.page) {
+			m.palette.Open(m.wallet != nil)
+			return m, tea.Batch(cmds...)
 		}
 
 		// Q to quit only from main page (dashboard)
@@ -679,6 +704,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.miner.SetThreads(msg.threads)
 		m.miner.SetAddress(msg.address)
 		m.miner.SetStatus(msg.status)
+		m.miner.SetDaemonHost(msg.daemonHost)
 
 	case startupCheckMsg:
 		// If we have a last wallet, check network first
@@ -736,6 +762,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := config.SetLastWallet(m.walletFile); err != nil {
 				derolog.Warn("wallet", "config.last_wallet_save_failed", "Failed saving last wallet", "error", err.Error(), "file", m.walletFile)
 			}
+			if err := config.SetLastMiningAddress(msg.wallet.GetInfo().Address); err != nil {
+				derolog.Warn("wallet", "config.mining_address_save_failed", "Failed saving mining address", "error", err.Error())
+			}
 			// Save network based on wallet's actual network (not CLI flags)
 			if msg.wallet.IsSimulator() {
 				if err := config.SetWalletNetwork(m.walletFile, config.NetworkSimulator); err != nil {
@@ -789,6 +818,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if err := config.SetLastWallet(m.walletFile); err != nil {
 				derolog.Warn("wallet", "config.last_wallet_save_failed", "Failed saving last wallet", "error", err.Error(), "file", m.walletFile)
+			}
+			if err := config.SetLastMiningAddress(msg.wallet.GetInfo().Address); err != nil {
+				derolog.Warn("wallet", "config.mining_address_save_failed", "Failed saving mining address", "error", err.Error())
 			}
 			// Save network using explicit create/restore selection when available.
 			networkToSave := config.NetworkMainnet
@@ -847,6 +879,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			if err := config.SetLastWallet(m.walletFile); err != nil {
 				derolog.Warn("wallet", "config.last_wallet_save_failed", "Failed saving last wallet", "error", err.Error(), "file", m.walletFile)
+			}
+			if err := config.SetLastMiningAddress(msg.wallet.GetInfo().Address); err != nil {
+				derolog.Warn("wallet", "config.mining_address_save_failed", "Failed saving mining address", "error", err.Error())
 			}
 			// Save network using explicit create/restore selection when available.
 			networkToSave := config.NetworkMainnet
@@ -1164,6 +1199,25 @@ func (m *Model) shutdownSession(quitting bool) {
 	}
 }
 
+// paletteEnabled reports whether the "/" command palette is available on the
+// given page. It is disabled on pages with text inputs or already-interactive
+// menus so "/" never gets stolen from typed input.
+func paletteEnabled(page Page) bool {
+	switch page {
+	case PageMain, PageMiner, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
+		return true
+	default:
+		return false
+	}
+}
+
+// overlayPage renders the command palette as a centered modal. The underlying
+// page content is intentionally not composed underneath; the palette is a
+// focused overlay that disappears when dismissed.
+func overlayPage(_ string, overlay string, width, height int) string {
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, overlay)
+}
+
 // dispatchPage routes the current message to the active page model, collecting
 // any resulting commands. It is extracted from Update to keep the message
 // dispatch switch parallel to the page model switch.
@@ -1414,7 +1468,7 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 		if m.miner.Cancelled() {
 			m.miner.ResetActions()
-			m.page = PageWelcome
+			m.page = m.minerReturnPage
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
 		if m.miner.WantStart() {
@@ -1565,6 +1619,12 @@ func (m Model) View() tea.View {
 	}
 	if height == 0 {
 		height = 40
+	}
+
+	// Overlay the command palette on top of the current page when open.
+	if m.palette.IsOpen() {
+		overlay := m.palette.View()
+		content = overlayPage(content, overlay, width, height)
 	}
 
 	// Render debug UI when enabled:

@@ -27,6 +27,7 @@ type MinerModel struct {
 	BlocksFound uint64
 	Address     string
 	Status      string
+	DaemonHost  string
 	lastError   string
 	cancelled   bool
 	wantStart   bool
@@ -81,13 +82,17 @@ func (m MinerModel) Update(msg tea.Msg) (MinerModel, tea.Cmd) {
 
 func (m MinerModel) View() string {
 	rows := []string{
-		styles.TitleStyle.Render("Embedded Miner"),
+		styles.TitleStyle.Render("Miner"),
 		"",
 		styles.MutedStyle.Render("Status: ") + m.renderStatus(),
 		styles.MutedStyle.Render("Address: ") + m.renderAddress(),
 		styles.MutedStyle.Render("Threads: ") + styles.TextStyle.Render(fmt.Sprintf("%d/%d", m.Threads, m.MaxThreads)),
 		styles.MutedStyle.Render("Hashrate: ") + styles.TextStyle.Render(formatMinerHashrate(m.Hashrate)),
 		styles.MutedStyle.Render("Blocks: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.BlocksFound)),
+	}
+
+	if m.DaemonHost != "" {
+		rows = append(rows, styles.MutedStyle.Render("Daemon: ")+styles.TextStyle.Render(m.DaemonHost))
 	}
 
 	if m.Status != "" {
@@ -131,6 +136,10 @@ func (m *MinerModel) SetStatus(status string) {
 	m.Status = status
 }
 
+func (m *MinerModel) SetDaemonHost(host string) {
+	m.DaemonHost = host
+}
+
 func (m *MinerModel) SetError(err string) {
 	m.lastError = err
 }
@@ -154,7 +163,7 @@ func (m MinerModel) renderStatus() string {
 
 func (m MinerModel) renderAddress() string {
 	if strings.TrimSpace(m.Address) == "" {
-		return styles.MutedStyle.Render("Open a wallet to mine to its address")
+		return styles.MutedStyle.Render("Open a wallet or press / to set a mining address")
 	}
 	return styles.TextStyle.Render(truncatePlain(m.Address, 56))
 }
@@ -169,7 +178,7 @@ func (m MinerModel) renderFooter() string {
 	} else {
 		parts = append(parts, k("S")+" "+mute("Start"), k("←/→")+" "+mute("Threads"))
 	}
-	parts = append(parts, k("Esc")+" "+mute("Back"))
+	parts = append(parts, k("/")+" "+mute("Commands"), k("Esc")+" "+mute("Back"))
 	return strings.Join(parts, sep)
 }
 

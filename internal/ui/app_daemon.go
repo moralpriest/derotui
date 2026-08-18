@@ -8,12 +8,15 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/deroproject/dero-wallet-cli/internal/config"
+	derolog "github.com/deroproject/dero-wallet-cli/internal/log"
 	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
+	minerservice "github.com/deroproject/dero-wallet-cli/internal/services/miner"
 	systemdservice "github.com/deroproject/dero-wallet-cli/internal/services/systemd"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
@@ -21,30 +24,192 @@ import (
 
 func (m *Model) startMinerCmd() tea.Cmd {
 	return func() tea.Msg {
-		if m.wallet == nil {
-			return minerControlMsg{err: "open a wallet first to choose a mining address"}
-		}
-		if m.embeddedDaemon == nil || !m.embeddedDaemon.IsRunning() {
-			return minerControlMsg{err: "start the embedded daemon before mining"}
-		}
-
-		address := m.wallet.GetInfo().Address
+		address := m.minerAddress()
 		if strings.TrimSpace(address) == "" {
-			return minerControlMsg{err: "wallet address is not available yet"}
+			return minerControlMsg{err: "open a wallet or /open to set a mining address"}
 		}
 
-		if err := m.embeddedDaemon.StartMiner(address, m.miner.Threads); err != nil {
+		// Validate address against the network of the daemon we'll mine on
+		network := m.minerDaemonNetwork()
+		if err := validateMiningAddressForDaemon(address, network); err != nil {
 			return minerControlMsg{err: err.Error()}
+		}
+
+		// Prefer embedded daemon if running
+		if m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() {
+			if err := m.embeddedDaemon.StartMiner(address, m.miner.Threads); err != nil {
+				return minerControlMsg{err: err.Error()}
+			}
+		} else {
+			// Use RPC miner against connected daemon
+			daemonHost := m.getworkHost()
+			if daemonHost == "" {
+				return minerControlMsg{err: "connect to a daemon first (use /connect or /daemon)"}
+			}
+
+			if m.rpcMiner != nil && m.rpcMiner.IsRunning() {
+				m.rpcMiner.Stop()
+			}
+			m.rpcMiner = minerservice.NewEngineMiner(minerservice.EngineMinerConfig{
+				Address:    address,
+				Threads:    m.miner.Threads,
+				DaemonHost: daemonHost,
+			})
+			if err := m.rpcMiner.Start(); err != nil {
+				return minerControlMsg{err: err.Error()}
+			}
+		}
+
+		if err := config.SetLastMiningAddress(address); err != nil {
+			derolog.Warn("miner", "config.mining_address_save_failed", "Failed saving mining address", "error", err.Error())
 		}
 
 		return minerControlMsg{}
 	}
 }
 
+// minerAddress resolves the mining payout address: open wallet first, then
+// the last remembered public address (so the miner works without unlocking).
+func (m *Model) minerAddress() string {
+	if m.wallet != nil {
+		if address := strings.TrimSpace(m.wallet.GetInfo().Address); address != "" {
+			return address
+		}
+	}
+	return strings.TrimSpace(config.GetLastMiningAddress())
+}
+
+// minerDaemonNetwork returns the network of the daemon we'll mine on.
+// Prefers embedded daemon network, else the connected/selected daemon network.
+func (m *Model) minerDaemonNetwork() string {
+	if m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() {
+		if status, _, _ := m.embeddedDaemon.GetStatus(); status.Network != "" {
+			return status.Network
+		}
+	}
+	// Fall back to sticky/configured daemon settings
+	settings := config.GetDaemonSettings()
+	if settings.Network != "" {
+		return settings.Network
+	}
+	if m.Opts.Simulator {
+		return string(config.NetworkSimulator)
+	}
+	if m.Opts.Testnet {
+		return string(config.NetworkTestnet)
+	}
+	return string(config.NetworkMainnet)
+}
+
+// getworkHost returns the host:port for getwork WebSocket.
+// Derives from the preferred daemon address (RPC port -> getwork port).
+func (m *Model) getworkHost() string {
+	// Use explicit sticky/selected daemon address
+	daemonAddr := m.preferredDaemonAddress()
+	if daemonAddr != "" {
+		return m.rpcToGetwork(daemonAddr)
+	}
+	// Fall back to wallet's connected daemon
+	if m.wallet != nil {
+		if addr := m.wallet.GetDaemonAddress(); addr != "" {
+			return m.rpcToGetwork(addr)
+		}
+	}
+	// Last resort: use daemon settings
+	settings := config.GetDaemonSettings()
+	if settings.RPCBind != "" {
+		return m.rpcToGetwork(settings.RPCBind)
+	}
+	return ""
+}
+
+// rpcToGetwork converts an RPC address to a getwork address.
+// Mainnet 10102 -> 10100, Testnet 40402 -> 40400, Simulator 20000 -> 20000
+func (m *Model) rpcToGetwork(rpcAddr string) string {
+	host, port := splitHostPort(rpcAddr)
+	switch port {
+	case "10102":
+		return host + ":10100"
+	case "40402":
+		return host + ":40400"
+	case "20000":
+		return host + ":20000"
+	default:
+		// If non-standard port, assume getwork is on port-2
+		if p, err := strconv.Atoi(port); err == nil {
+			return host + ":" + strconv.Itoa(p-2)
+		}
+		return rpcAddr // fallback: use as-is
+	}
+}
+
+// splitHostPort splits "host:port" into host and port.
+func splitHostPort(addr string) (string, string) {
+	if i := strings.LastIndex(addr, ":"); i >= 0 {
+		return addr[:i], addr[i+1:]
+	}
+	return addr, ""
+}
+
+// embeddedDaemonNetwork returns the network the embedded daemon runs on
+// ("mainnet", "testnet", "simulator"), falling back to the app network.
+func (m *Model) embeddedDaemonNetwork() string {
+	if m.embeddedDaemon != nil {
+		if status, _, _ := m.embeddedDaemon.GetStatus(); status.Network != "" {
+			return status.Network
+		}
+	}
+	settings := config.GetDaemonSettings()
+	if settings.Network != "" {
+		return settings.Network
+	}
+	if m.Opts.Simulator {
+		return string(config.NetworkSimulator)
+	}
+	if m.Opts.Testnet {
+		return string(config.NetworkTestnet)
+	}
+	return string(config.NetworkMainnet)
+}
+
+// validateMiningAddressForDaemon ensures the payout address belongs to the
+// network the embedded daemon mines on. A mainnet address mined on testnet
+// would pay out to a useless address.
+func validateMiningAddressForDaemon(address, network string) error {
+	prefix := networkPrefix(network)
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(address)), prefix) {
+		return fmt.Errorf("mining address (%s) does not match embedded daemon network %s; open a wallet on that network or /connect to change it", describeAddressNetwork(address), titleDaemonNetwork(network))
+	}
+	return nil
+}
+
+func networkPrefix(network string) string {
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case string(config.NetworkTestnet), string(config.NetworkSimulator):
+		return "deto1"
+	default:
+		return "dero1"
+	}
+}
+
+func describeAddressNetwork(address string) string {
+	address = strings.ToLower(strings.TrimSpace(address))
+	if strings.HasPrefix(address, "dero1") {
+		return "mainnet"
+	}
+	if strings.HasPrefix(address, "deto1") {
+		return "testnet/simulator"
+	}
+	return "unknown"
+}
+
 func (m *Model) stopMinerCmd() tea.Cmd {
 	return func() tea.Msg {
 		if m.embeddedDaemon != nil {
 			_ = m.embeddedDaemon.StopMiner()
+		}
+		if m.rpcMiner != nil {
+			m.rpcMiner.Stop()
 		}
 		return minerControlMsg{}
 	}
@@ -53,33 +218,62 @@ func (m *Model) stopMinerCmd() tea.Cmd {
 func (m *Model) minerStatsCmd() tea.Cmd {
 	return func() tea.Msg {
 		msg := minerStatsMsg{}
-		if m.embeddedDaemon == nil || !m.embeddedDaemon.IsRunning() {
-			msg.threads = m.miner.Threads
-			if m.wallet != nil {
-				msg.address = m.wallet.GetInfo().Address
+		resolvedAddress := m.minerAddress()
+
+		// Embedded daemon path
+		if m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() {
+			miner := m.embeddedDaemon.MinerStatus()
+			msg.running = miner.Running
+			msg.hashrate = miner.Hashrate
+			msg.blocks = miner.Blocks
+			msg.threads = miner.Threads
+			msg.address = miner.Address
+			if msg.threads == 0 {
+				msg.threads = m.miner.Threads
 			}
-			msg.status = "Embedded daemon must be running before mining can start."
+			if msg.address == "" {
+				msg.address = resolvedAddress
+			}
+			// Get daemon host from embedded daemon status
+			if status, _, _ := m.embeddedDaemon.GetStatus(); status.RPCBind != "" {
+				msg.daemonHost = status.RPCBind
+			}
+			if resolvedAddress == "" && !msg.running {
+				msg.status = "Open a wallet or /open to set a mining address."
+			} else if msg.running {
+				msg.status = "Mining miniblocks with AstroBWTv3."
+			} else {
+				msg.status = "Adjust threads, then press S to start mining."
+			}
 			return msg
 		}
 
-		miner := m.embeddedDaemon.MinerStatus()
-		msg.running = miner.Running
-		msg.hashrate = miner.Hashrate
-		msg.blocks = miner.Blocks
-		msg.threads = miner.Threads
-		msg.address = miner.Address
-		if msg.threads == 0 {
-			msg.threads = m.miner.Threads
+		// RPC miner path
+		if m.rpcMiner != nil && m.rpcMiner.IsRunning() {
+			msg.running = true
+			msg.hashrate = m.rpcMiner.GetHashrate()
+			msg.blocks = m.rpcMiner.GetBlocks()
+			msg.threads = m.rpcMiner.GetThreads()
+			msg.address = m.rpcMiner.GetAddress()
+			msg.daemonHost = m.rpcMiner.GetDaemonHost()
+			if resolvedAddress == "" && !msg.running {
+				msg.status = "Open a wallet or /open to set a mining address."
+			} else if msg.running {
+				msg.status = "Mining via " + msg.daemonHost
+			} else {
+				msg.status = "Adjust threads, then press S to start mining."
+			}
+			return msg
 		}
-		if msg.address == "" && m.wallet != nil {
-			msg.address = m.wallet.GetInfo().Address
-		}
-		if m.wallet == nil && !msg.running {
-			msg.status = "Open a wallet to mine to its address."
-		} else if msg.running {
-			msg.status = "Mining miniblocks with AstroBWTv3."
+
+		// Not mining, no daemon running
+		msg.threads = m.miner.Threads
+		msg.address = resolvedAddress
+		msg.daemonHost = m.getworkHost()
+		if msg.daemonHost != "" {
+			msg.status = "Daemon: " + msg.daemonHost + " • Press S to start mining."
 		} else {
-			msg.status = "Adjust threads, then press S to start mining."
+			msg.status = "Connect to a daemon first (use /connect or /daemon)."
 		}
 		return msg
 	}
@@ -96,13 +290,13 @@ func (m *Model) embeddedDaemonStatusCmd() tea.Cmd {
 	return func() tea.Msg {
 		statusSnapshot, info, logs := m.embeddedDaemon.GetStatus()
 		snap := daemonservice.Snapshot{
-			Running:     statusSnapshot.Running,
-			Managed:     statusSnapshot.Managed,
-			RPCBind:     statusSnapshot.RPCBind,
-			P2PBind:     statusSnapshot.P2PBind,
-			DataDir:     statusSnapshot.DataDir,
-			Network:     statusSnapshot.Network,
-			LastError:   statusSnapshot.LastError,
+			Running:   statusSnapshot.Running,
+			Managed:   statusSnapshot.Managed,
+			RPCBind:   statusSnapshot.RPCBind,
+			P2PBind:   statusSnapshot.P2PBind,
+			DataDir:   statusSnapshot.DataDir,
+			Network:   statusSnapshot.Network,
+			LastError: statusSnapshot.LastError,
 		}
 		return daemonManagerMsg{snapshot: snap, logs: logs, info: info, source: "Embedded"}
 	}

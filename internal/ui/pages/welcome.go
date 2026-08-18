@@ -35,6 +35,7 @@ const (
 	ActionSetTheme
 	ActionPreviewTheme
 	ActionMiner
+	ActionCloseWallet
 )
 
 // Command represents a slash command
@@ -124,8 +125,8 @@ func NewWelcome() WelcomeModel {
 		{Name: "/open", Description: "Open an existing wallet", Action: ActionOpen},
 		{Name: "/create", Description: "Create a new wallet", Action: ActionCreate},
 		{Name: "/restore", Description: "Restore a wallet", Action: ActionRestore},
-		{Name: "/daemon", Description: "Manage local daemon", Action: ActionDaemon},
 		{Name: "/miner", Description: "Start embedded miner", Action: ActionMiner},
+		{Name: "/daemon", Description: "Manage local daemon", Action: ActionDaemon},
 		{Name: "/themes", Description: "Change color theme", Action: ActionThemes},
 		{Name: "/connect", Description: "Connect to a daemon", Action: ActionConnectDaemon},
 		{Name: "/debug", Description: "Open debug console", Action: ActionDebug},

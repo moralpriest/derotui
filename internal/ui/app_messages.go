@@ -137,12 +137,13 @@ type minerControlMsg struct {
 }
 
 type minerStatsMsg struct {
-	running  bool
-	hashrate uint64
-	blocks   uint64
-	threads  int
-	address  string
-	status   string
+	running    bool
+	hashrate   uint64
+	blocks     uint64
+	threads    int
+	address    string
+	status     string
+	daemonHost string
 }
 
 // walletDataMsg is sent when a background transaction-refresh completes.
