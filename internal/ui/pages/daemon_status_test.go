@@ -183,39 +183,58 @@ func TestDaemonStatusUninstallConfirmEscCancels(t *testing.T) {
 	}
 }
 
-// The uninstall confirm renders its explanation and prompt.
+// The reset confirm renders its explanation and prompt.
 func TestDaemonStatusRendersUninstallConfirm(t *testing.T) {
 	d := NewDaemonStatus()
 	d.ConfirmingUninstall = true
 
 	view := d.View()
-	for _, want := range []string{"Uninstall derod", "[Y] Uninstall", "Config and chain data are kept"} {
+	for _, want := range []string{"Reset daemon", "[Y] Reset", "deletes the chain data folder"} {
 		if !strings.Contains(view, want) {
-			t.Errorf("uninstall confirm view missing %q", want)
+			t.Errorf("reset confirm view missing %q", want)
 		}
 	}
 }
 
-// Uninstall is shown in the footer when a derod systemd service exists, and
-// hidden when the daemon is external/managed instead.
-func TestDaemonStatusFooterShowsUninstallForSystemDaemon(t *testing.T) {
-	d := NewDaemonStatus()
-	d.SetSnapshot(DaemonStatusSnapshot{Running: true, Source: "System Daemon"})
-
-	view := stripANSI(d.View())
-	if !strings.Contains(view, "U Uninstall") {
-		t.Fatal("expected Uninstall in footer for a system daemon")
-	}
-}
-
-func TestDaemonStatusFooterHidesUninstallForOtherSources(t *testing.T) {
-	for _, source := range []string{"External Local", "Managed Local", "Planned Local", "Embedded"} {
+// Reset is shown in the footer for a systemd service, the embedded helper,
+// and managed/planned local nodes — anything we own — but hidden for
+// external daemons we merely connected to.
+func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		shown  bool
+	}{
+		{"System Daemon", true},
+		{"Embedded", true},
+		{"Managed Local", true},
+		{"Planned Local", true},
+		{"External Local", false},
+		{"Unknown", false},
+	} {
 		d := NewDaemonStatus()
-		d.SetSnapshot(DaemonStatusSnapshot{Running: true, Source: source})
+		d.SetSnapshot(DaemonStatusSnapshot{Running: tc.source == "System Daemon", Source: tc.source})
 
 		view := stripANSI(d.View())
-		if strings.Contains(view, "U Uninstall") {
-			t.Errorf("Uninstall must not show for source %q", source)
+		has := strings.Contains(view, "U Reset")
+		if has != tc.shown {
+			t.Errorf("source %q: expected Reset shown=%v, got %v", tc.source, tc.shown, has)
 		}
+	}
+}
+
+// Reset stays hidden while a download is in progress or an install plan is
+// awaiting confirmation — mixing reset with an in-flight install is unsafe.
+func TestDaemonStatusFooterHidesResetDuringDownloadAndInstall(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Source: "System Daemon"})
+	d.Downloading = true
+	if view := stripANSI(d.View()); strings.Contains(view, "U Reset") {
+		t.Fatal("Reset must not show while downloading")
+	}
+
+	d.Downloading = false
+	d.InstallPlan = &installer.Plan{}
+	if view := stripANSI(d.View()); strings.Contains(view, "U Reset") {
+		t.Fatal("Reset must not show while an install plan is pending")
 	}
 }

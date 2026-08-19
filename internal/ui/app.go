@@ -680,7 +680,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonStatus.DownloadError = msg.err
 		} else {
 			m.daemonStatus.DownloadError = ""
-			m.daemonStatus.InstallResult = "Uninstalled " + msg.removed
+			m.daemonStatus.InstallResult = "Reset complete \u2014 removed " + msg.removed
 			cmds = append(cmds, m.daemonTickCmd())
 		}
 

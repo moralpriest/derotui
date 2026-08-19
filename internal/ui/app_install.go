@@ -113,20 +113,26 @@ func (m *Model) daemonInstallApplySudoCmd(plan installer.Plan) tea.Cmd {
 	}
 }
 
-// daemonUninstallCmd removes an installed derod systemd service (user or
-// system scope) and the TUI-downloaded binary, returning the app to the
-// pre-install state. Config and chain data are deliberately kept.
+// daemonUninstallCmd resets the daemon to a from-scratch state: it stops
+// any daemon we own (embedded helper or managed process), removes an
+// installed derod systemd service (user or system scope) and the
+// TUI-downloaded binary, and deletes the chain data directory for the
+// configured network. Wallet files and app config are deliberately kept.
 func (m *Model) daemonUninstallCmd() tea.Cmd {
 	return func() tea.Msg {
+		// Stop any daemon we own so chain data isn't deleted under a live node.
+		if m.embeddedDaemon != nil {
+			_ = m.embeddedDaemon.Stop()
+		}
+		if m.daemonManager != nil {
+			_ = m.daemonManager.Stop()
+		}
+
+		var removed []string
 		result, err := systemdservice.DetectAll("derod")
 		if err != nil {
 			return daemonUninstallMsg{err: err.Error()}
 		}
-		if !result.User.Exists && !result.System.Exists {
-			return daemonUninstallMsg{err: "no derod service found to uninstall"}
-		}
-
-		var removed []string
 		if result.User.Exists {
 			if err := systemdservice.RemoveUnit(systemdservice.ScopeUser, result.User.Unit, result.User.FragmentPath); err != nil {
 				return daemonUninstallMsg{err: "user service: " + err.Error()}
@@ -155,8 +161,62 @@ func (m *Model) daemonUninstallCmd() tea.Cmd {
 			}
 		}
 
+		// Wipe the chain data — the "start from scratch" part.
+		wiped := 0
+		for _, dir := range chainDataDirs() {
+			if err := os.RemoveAll(dir); err == nil {
+				wiped++
+			} else {
+				removed = append(removed, "chain data ("+err.Error()+")")
+			}
+		}
+		if wiped > 0 {
+			removed = append(removed, "chain data")
+		}
+
+		if len(removed) == 0 {
+			return daemonUninstallMsg{err: "nothing to reset"}
+		}
 		return daemonUninstallMsg{removed: strings.Join(removed, ", ")}
 	}
+}
+
+// chainDataDirs returns the chain data directories derod uses for the
+// configured network under the configured data dir (e.g. ~/.derotui/mainnet),
+// mirroring derohe's globals.GetDataDirectory naming. Only directories that
+// exist are returned.
+func chainDataDirs() []string {
+	settings := config.GetDaemonSettings()
+	base := strings.TrimSpace(settings.DataDir)
+	if base == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			base = filepath.Join(home, ".derotui")
+		}
+	}
+	if base == "" {
+		return nil
+	}
+
+	network := strings.ToLower(strings.TrimSpace(settings.Network))
+	var names []string
+	switch network {
+	case "testnet":
+		names = []string{"testnet", "testnet_simulator"}
+	case "simulator":
+		// derod runs the simulator on the mainnet base with a _simulator suffix.
+		names = []string{"mainnet_simulator"}
+	default:
+		names = []string{"mainnet", "mainnet_simulator"}
+	}
+
+	var dirs []string
+	for _, name := range names {
+		dir := filepath.Join(base, name)
+		if fi, err := os.Stat(dir); err == nil && fi.IsDir() {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
 // defaultDerodBinaryPath returns the binary path derotui manages, or "" when

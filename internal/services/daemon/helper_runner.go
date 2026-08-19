@@ -13,11 +13,11 @@ import (
 	"sync"
 	"time"
 
-	derodpkg "github.com/moralpriest/derodpkg/cmd"
 	"github.com/deroproject/derohe/blockchain"
 	deroconfig "github.com/deroproject/derohe/config"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/p2p"
+	derodpkg "github.com/moralpriest/derodpkg/cmd"
 
 	appconfig "github.com/deroproject/dero-wallet-cli/internal/config"
 	minerservice "github.com/deroproject/dero-wallet-cli/internal/services/miner"

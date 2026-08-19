@@ -249,7 +249,7 @@ func (d DaemonStatusModel) View() string {
 	}
 
 	if d.ConfirmingUninstall && !d.Downloading {
-		rows = append(rows, "", sectionHeader("Uninstall derod", styles.ColorAccent))
+		rows = append(rows, "", sectionHeader("Reset daemon", styles.ColorAccent))
 		rows = append(rows, d.renderUninstallConfirm()...)
 	}
 
@@ -296,14 +296,15 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 	return rows
 }
 
-// renderUninstallConfirm explains what uninstalling removes and asks for
+// renderUninstallConfirm explains what a reset removes and asks for
 // confirmation before any system-level changes are made.
 func (d DaemonStatusModel) renderUninstallConfirm() []string {
 	rows := []string{
-		styles.MutedStyle.Render("  Stops and removes the derod systemd service and the"),
-		styles.MutedStyle.Render("  downloaded binary. Config and chain data are kept."),
+		styles.MutedStyle.Render("  Stops the daemon, removes the derod service and downloaded"),
+		styles.MutedStyle.Render("  binary, and deletes the chain data folder \u2014 starting from scratch."),
+		styles.MutedStyle.Render("  Wallet files and app config are kept."),
 		"",
-		styles.WarningStyle.Render("  [Y] Uninstall \u2022 [N]/Esc Cancel"),
+		styles.WarningStyle.Render("  [Y] Reset \u2022 [N]/Esc Cancel"),
 	}
 	return rows
 }
@@ -339,11 +340,15 @@ func (d DaemonStatusModel) renderFooter() string {
 		parts = append(parts, k("I")+" "+m("Install"))
 	}
 
-	// Uninstall is offered whenever a derod service exists (System Daemon
-	// source), whether running or stopped — it stops the unit as part of
-	// removal.
-	if isSystemDaemon && !d.ConfirmingUninstall && d.InstallPlan == nil {
-		parts = append(parts, k("U")+" "+m("Uninstall"))
+	// Reset is offered for any daemon we own or installed: the embedded
+	// helper, a systemd service, or a managed/planned local node. External
+	// local daemons (nodes we merely connected to) are left alone — we
+	// don't own their data.
+	source := strings.ToLower(strings.TrimSpace(d.Snapshot.Source))
+	resettable := isEmbedded || isSystemDaemon ||
+		strings.Contains(source, "managed") || strings.Contains(source, "planned")
+	if !d.Downloading && resettable && !d.ConfirmingUninstall && d.InstallPlan == nil {
+		parts = append(parts, k("U")+" "+m("Reset"))
 	}
 	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
 
