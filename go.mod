@@ -93,4 +93,4 @@ replace github.com/lesismal/llib => github.com/lesismal/llib v1.1.6
 
 replace go-miner => ../Dirtybird-Go-Miner
 
-replace github.com/civilware/tela => github.com/moralpriest/tela v0.0.0-20260811235101-8ee693d0cfd5
+replace github.com/civilware/tela => github.com/moralpriest/tela v0.0.0-20260819053201-797dc7eaf94f
