@@ -234,33 +234,70 @@ func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
 	}
 }
 
-// A second Esc within the debounce window is swallowed so a stray/repeated
-// Esc (or Esc right after dismissing a confirm) can't navigate away.
-func TestDaemonStatusEscDebounced(t *testing.T) {
+// A single Esc must not navigate away — it only arms the leave-page guard.
+// A second Esc within 2s leaves, and any other key disarms. This prevents a
+// stray Escape arriving from the terminal (e.g. a fragmented escape sequence)
+// from kicking the user back to welcome with no input.
+func TestDaemonStatusEscArmsThenLeaves(t *testing.T) {
 	d := NewDaemonStatus()
 
-	// First Esc registers.
+	// First Esc arms the guard but must NOT navigate away.
 	next, _ := d.Update(planPreviewKeys("esc"))
-	if !next.Cancelled() {
-		t.Fatal("first esc should navigate away")
+	if next.Cancelled() {
+		t.Fatal("single esc must not navigate away")
+	}
+	if !next.escArmed {
+		t.Fatal("first esc should arm the leave guard")
 	}
 
-	// A second Esc immediately after is swallowed (no state change).
+	// Second Esc within the window leaves.
+	next, _ = next.Update(planPreviewKeys("esc"))
+	if !next.Cancelled() {
+		t.Fatal("second esc should navigate away")
+	}
+}
+
+// After any other key, the leave guard is disarmed and Esc must be pressed
+// twice again — so a stray Esc can never combine with a later one.
+func TestDaemonStatusEscDisarmedByOtherKey(t *testing.T) {
+	d := NewDaemonStatus()
+
+	// Arm the guard.
+	next, _ := d.Update(planPreviewKeys("esc"))
+	if next.escArmed != true {
+		t.Fatal("expected esc to arm the guard")
+	}
+
+	// Any other key disarms.
+	next, _ = next.Update(planPreviewKeys("s"))
+	if !next.WantStart() {
+		t.Fatal("non-esc key should still work")
+	}
+	if next.escArmed {
+		t.Fatal("non-esc key must disarm the guard")
+	}
+
+	// Esc again only arms; a further Esc leaves.
 	next.ResetActions()
 	next, _ = next.Update(planPreviewKeys("esc"))
 	if next.Cancelled() {
-		t.Fatal("rapid second esc must be swallowed by the debounce")
+		t.Fatal("esc after an intervening key must not navigate away on the first press")
 	}
-
-	// After any other key, the guard resets and Esc works again.
-	next, _ = next.Update(planPreviewKeys("s"))
-	if !next.WantStart() {
-		t.Fatal("non-esc key should still work and reset the guard")
-	}
-	next.ResetActions()
 	next, _ = next.Update(planPreviewKeys("esc"))
 	if !next.Cancelled() {
-		t.Fatal("esc after an intervening key should navigate away again")
+		t.Fatal("second esc after an intervening key should navigate away")
+	}
+}
+
+// The footer shows a clear hint once the leave guard is armed.
+func TestDaemonStatusFooterShowsEscAgainHint(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Embedded"})
+
+	next, _ := d.Update(planPreviewKeys("esc"))
+	view := stripANSI(next.View())
+	if !strings.Contains(view, "Esc again to leave") {
+		t.Fatalf("expected an 'Esc again to leave' hint, got:\n%s", view)
 	}
 }
 

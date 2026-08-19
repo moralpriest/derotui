@@ -83,7 +83,8 @@ type DaemonStatusModel struct {
 	wantUninstallDone   bool
 	ConfirmingUninstall bool
 	cancelled           bool
-	lastEscAt           time.Time
+	escArmed            bool
+	escArmedAt          time.Time
 	width               int
 	height              int
 }
@@ -106,19 +107,11 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		d.DownloadError = ""
 		d.InstallResult = ""
-		// Debounce Esc: a stray or repeated Esc (key repeat, or Esc right
-		// after dismissing a confirm screen) must not bounce the user out of
-		// the daemon page unexpectedly. Only a deliberate second Esc — after
-		// the debounce window — navigates back. Any other key resets the guard.
 		isEsc := key.Matches(msg, pageEscKeys)
-		if isEsc {
-			now := time.Now()
-			if !d.lastEscAt.IsZero() && now.Sub(d.lastEscAt) < 300*time.Millisecond {
-				return d, nil
-			}
-			d.lastEscAt = now
-		} else {
-			d.lastEscAt = time.Time{}
+		// Any non-Esc key disarms the leave-page guard.
+		if !isEsc {
+			d.escArmed = false
+			d.escArmedAt = time.Time{}
 		}
 		// While an install plan is awaiting confirmation, only the confirm
 		// keys apply — regular page keys (start/stop/etc.) must not fire.
@@ -128,7 +121,7 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 				d.wantInstallApply = true
 			case msg.String() == "n" || msg.String() == "N":
 				d.wantInstallDone = true
-			case key.Matches(msg, pageEscKeys):
+			case isEsc:
 				d.wantInstallDone = true
 			}
 			return d, nil
@@ -141,14 +134,25 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 				d.wantUninstallApply = true
 			case msg.String() == "n" || msg.String() == "N":
 				d.wantUninstallDone = true
-			case key.Matches(msg, pageEscKeys):
+			case isEsc:
 				d.wantUninstallDone = true
 			}
 			return d, nil
 		}
+		// Leaving the page requires two Esc presses within 2s. A lone Escape
+		// arriving from the terminal (e.g. a fragmented escape sequence) can
+		// otherwise kick the user back to welcome with no input at all.
+		if isEsc {
+			now := time.Now()
+			if d.escArmed && now.Sub(d.escArmedAt) < 2*time.Second {
+				d.cancelled = true
+			} else {
+				d.escArmed = true
+				d.escArmedAt = now
+			}
+			return d, nil
+		}
 		switch {
-		case key.Matches(msg, pageEscKeys):
-			d.cancelled = true
 		case key.Matches(msg, daemonStartKeys):
 			d.wantStart = true
 		case key.Matches(msg, daemonStopKeys):
@@ -369,7 +373,11 @@ func (d DaemonStatusModel) renderFooter() string {
 	if !d.Downloading && resettable && !d.ConfirmingUninstall && d.InstallPlan == nil {
 		parts = append(parts, k("U")+" "+m("Reset"))
 	}
-	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
+	if d.escArmed {
+		parts = append(parts, k("C")+" "+m("Config"), styles.WarningStyle.Render("Esc again to leave"))
+	} else {
+		parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
+	}
 
 	return strings.Join(parts, sep)
 }
@@ -613,4 +621,6 @@ func (d *DaemonStatusModel) ResetActions() {
 	d.wantUninstallApply = false
 	d.wantUninstallDone = false
 	d.cancelled = false
+	d.escArmed = false
+	d.escArmedAt = time.Time{}
 }
