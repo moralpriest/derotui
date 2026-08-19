@@ -2,7 +2,11 @@
 
 package daemon
 
-import appconfig "github.com/deroproject/dero-wallet-cli/internal/config"
+import (
+	"time"
+
+	appconfig "github.com/deroproject/dero-wallet-cli/internal/config"
+)
 
 type helperRequest struct {
 	Action   string                    `json:"action"`
@@ -12,11 +16,17 @@ type helperRequest struct {
 }
 
 type helperMinerStatus struct {
-	Running  bool   `json:"running"`
-	Hashrate uint64 `json:"hashrate"`
-	Blocks   uint64 `json:"blocks"`
-	Threads  int    `json:"threads"`
-	Address  string `json:"address"`
+	Running    bool          `json:"running"`
+	Hashrate   uint64        `json:"hashrate"`
+	Blocks     uint64        `json:"blocks"`
+	Minis      uint64        `json:"minis"`
+	Rejected   uint64        `json:"rejected"`
+	Height     uint64        `json:"height"`
+	Difficulty uint64        `json:"difficulty"`
+	Hashes     uint64        `json:"hashes"`
+	Uptime     time.Duration `json:"uptime"`
+	Threads    int           `json:"threads"`
+	Address    string        `json:"address"`
 }
 
 type helperResponse struct {

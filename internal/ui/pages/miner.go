@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -24,7 +25,13 @@ type MinerModel struct {
 	Threads     int
 	MaxThreads  int
 	Hashrate    uint64
+	Hashes      uint64
+	Minis       uint64
 	BlocksFound uint64
+	Rejected    uint64
+	Height      uint64
+	Difficulty  uint64
+	Uptime      time.Duration
 	Address     string
 	Status      string
 	DaemonHost  string
@@ -88,7 +95,13 @@ func (m MinerModel) View() string {
 		styles.MutedStyle.Render("Address: ") + m.renderAddress(),
 		styles.MutedStyle.Render("Threads: ") + styles.TextStyle.Render(fmt.Sprintf("%d/%d", m.Threads, m.MaxThreads)),
 		styles.MutedStyle.Render("Hashrate: ") + styles.TextStyle.Render(formatMinerHashrate(m.Hashrate)),
+		styles.MutedStyle.Render("Total Hashes: ") + styles.TextStyle.Render(formatUint64(m.Hashes)),
+		styles.MutedStyle.Render("Minis: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Minis)),
 		styles.MutedStyle.Render("Blocks: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.BlocksFound)),
+		styles.MutedStyle.Render("Rejected: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Rejected)),
+		styles.MutedStyle.Render("Height: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Height)),
+		styles.MutedStyle.Render("Difficulty: ") + styles.TextStyle.Render(formatMinerDifficulty(m.Difficulty)),
+		styles.MutedStyle.Render("Uptime: ") + styles.TextStyle.Render(formatMinerUptime(m.Uptime)),
 	}
 
 	if m.DaemonHost != "" {
@@ -113,9 +126,15 @@ func (m *MinerModel) SetRunning(running bool) {
 	}
 }
 
-func (m *MinerModel) SetStats(hashrate, blocks uint64) {
+func (m *MinerModel) SetStats(hashrate, hashes, minis, blocks, rejected, height, difficulty uint64, uptime time.Duration) {
 	m.Hashrate = hashrate
+	m.Hashes = hashes
+	m.Minis = minis
 	m.BlocksFound = blocks
+	m.Rejected = rejected
+	m.Height = height
+	m.Difficulty = difficulty
+	m.Uptime = uptime
 }
 
 func (m *MinerModel) SetAddress(address string) {
@@ -190,4 +209,32 @@ func formatMinerHashrate(hashrate uint64) string {
 		return fmt.Sprintf("%.2f KH/s", float64(hashrate)/1000)
 	}
 	return fmt.Sprintf("%d H/s", hashrate)
+}
+
+// formatMinerUptime renders a duration as hh:mm:ss (matching the go-miner
+// CLI's uptime format).
+func formatMinerUptime(d time.Duration) string {
+	total := int64(d.Seconds())
+	if total < 0 {
+		total = 0
+	}
+	hh := total / 3600
+	mm := total / 60 % 60
+	ss := total % 60
+	return fmt.Sprintf("%02d:%02d:%02d", hh, mm, ss)
+}
+
+// formatMinerDifficulty humanizes a difficulty value the way the go-miner
+// CLI does (integer division: 20K, 1M, 2G).
+func formatMinerDifficulty(n uint64) string {
+	switch {
+	case n >= 1e9:
+		return fmt.Sprintf("%dG", n/1e9)
+	case n >= 1e6:
+		return fmt.Sprintf("%dM", n/1e6)
+	case n >= 1e3:
+		return fmt.Sprintf("%dK", n/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }

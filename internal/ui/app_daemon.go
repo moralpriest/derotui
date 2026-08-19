@@ -47,17 +47,18 @@ func (m *Model) startMinerCmd() tea.Cmd {
 				return minerControlMsg{err: "connect to a daemon first (use /connect or /daemon)"}
 			}
 
-			if m.rpcMiner != nil && m.rpcMiner.IsRunning() {
-				m.rpcMiner.Stop()
-			}
-			m.rpcMiner = minerservice.NewEngineMiner(minerservice.EngineMinerConfig{
+			// Build the backend locally and return it through the message. Model
+			// is value-receiver, so assigning m.rpcMiner here would mutate the
+			// closure's copy and the live model would never see the miner.
+			backend := minerservice.NewEngineMiner(minerservice.EngineMinerConfig{
 				Address:    address,
 				Threads:    m.miner.Threads,
 				DaemonHost: daemonHost,
 			})
-			if err := m.rpcMiner.Start(); err != nil {
+			if err := backend.Start(); err != nil {
 				return minerControlMsg{err: err.Error()}
 			}
+			return minerControlMsg{miner: backend}
 		}
 
 		if err := config.SetLastMiningAddress(address); err != nil {
@@ -210,6 +211,7 @@ func (m *Model) stopMinerCmd() tea.Cmd {
 		}
 		if m.rpcMiner != nil {
 			m.rpcMiner.Stop()
+			return minerControlMsg{miner: m.rpcMiner}
 		}
 		return minerControlMsg{}
 	}
@@ -226,6 +228,12 @@ func (m *Model) minerStatsCmd() tea.Cmd {
 			msg.running = miner.Running
 			msg.hashrate = miner.Hashrate
 			msg.blocks = miner.Blocks
+			msg.minis = miner.Minis
+			msg.rejected = miner.Rejected
+			msg.height = miner.Height
+			msg.difficulty = miner.Difficulty
+			msg.hashes = miner.Hashes
+			msg.uptime = miner.Uptime
 			msg.threads = miner.Threads
 			msg.address = miner.Address
 			if msg.threads == 0 {
@@ -253,6 +261,12 @@ func (m *Model) minerStatsCmd() tea.Cmd {
 			msg.running = true
 			msg.hashrate = m.rpcMiner.GetHashrate()
 			msg.blocks = m.rpcMiner.GetBlocks()
+			msg.minis = m.rpcMiner.GetMinis()
+			msg.rejected = m.rpcMiner.GetRejected()
+			msg.height = m.rpcMiner.GetHeight()
+			msg.difficulty = m.rpcMiner.GetDifficulty()
+			msg.hashes = m.rpcMiner.GetHashes()
+			msg.uptime = m.rpcMiner.GetUptime()
 			msg.threads = m.rpcMiner.GetThreads()
 			msg.address = m.rpcMiner.GetAddress()
 			msg.daemonHost = m.rpcMiner.GetDaemonHost()
@@ -290,13 +304,16 @@ func (m *Model) embeddedDaemonStatusCmd() tea.Cmd {
 	return func() tea.Msg {
 		statusSnapshot, info, logs := m.embeddedDaemon.GetStatus()
 		snap := daemonservice.Snapshot{
-			Running:   statusSnapshot.Running,
-			Managed:   statusSnapshot.Managed,
-			RPCBind:   statusSnapshot.RPCBind,
-			P2PBind:   statusSnapshot.P2PBind,
-			DataDir:   statusSnapshot.DataDir,
-			Network:   statusSnapshot.Network,
-			LastError: statusSnapshot.LastError,
+			Running:               statusSnapshot.Running,
+			Managed:               statusSnapshot.Managed,
+			RPCBind:               statusSnapshot.RPCBind,
+			P2PBind:               statusSnapshot.P2PBind,
+			DataDir:               statusSnapshot.DataDir,
+			Network:               statusSnapshot.Network,
+			LastError:             statusSnapshot.LastError,
+			PeerHeight:            statusSnapshot.PeerHeight,
+			SyncProgress:          statusSnapshot.SyncProgress,
+			IsFinalizingBootstrap: statusSnapshot.IsFinalizingBootstrap,
 		}
 		return daemonManagerMsg{snapshot: snap, logs: logs, info: info, source: "Embedded"}
 	}
@@ -336,7 +353,7 @@ func (m *Model) daemonManagerStatusCmd() tea.Cmd {
 				snapshot = snapshotFromSystemd(settings, service, rpcAddr, info)
 				logs := readSystemdLogLines(service)
 				if len(logs) == 0 {
-					logs = readExternalLogLines(settings)
+					logs = readExternalLogLines(settings, snapshot)
 				}
 				return daemonManagerMsg{snapshot: snapshot, logs: logs, info: info, err: errMsg, source: source}
 			}
@@ -365,7 +382,7 @@ func (m *Model) daemonManagerStatusCmd() tea.Cmd {
 		}
 		logs := m.daemonManager.Logs()
 		if source == "External Local" && len(logs) == 0 {
-			logs = readExternalLogLines(config.GetDaemonSettings())
+			logs = readExternalLogLines(config.GetDaemonSettings(), snapshot)
 		}
 		return daemonManagerMsg{snapshot: snapshot, logs: logs, info: info, err: errMsg, source: source}
 	}
@@ -455,6 +472,9 @@ func (m *Model) stopLocalDaemonCmd() tea.Cmd {
 
 		// 3. Try stopping by PID from snapshot (externally started daemon)
 		pid := m.daemonStatus.Snapshot.PID
+		if pid <= 0 {
+			pid = daemonservice.FindDerodPID(m.daemonStatus.Snapshot.RPCBind)
+		}
 		if pid > 0 {
 			if err := daemonservice.StopByPID(pid); err != nil {
 				msg := m.daemonManagerStatusCmd()().(daemonManagerMsg)
@@ -514,13 +534,20 @@ func (m *Model) restartLocalDaemonCmd() tea.Cmd {
 			return msg
 		}
 
-		// 3. Try stopping by PID, then start a new managed process
+		// 3. Try stopping by PID, then start a new managed process. For an
+		// externally started daemon, relaunch it with its own detected config
+		// (binary, data dir, binds, node tag, log dir) so the same node comes
+		// back instead of the app's saved template.
 		pid := m.daemonStatus.Snapshot.PID
+		if pid <= 0 {
+			pid = daemonservice.FindDerodPID(m.daemonStatus.Snapshot.RPCBind)
+		}
 		if pid > 0 {
 			if err := daemonservice.StopByPID(pid); err != nil {
 				return daemonManagerMsg{err: err.Error()}
 			}
 			time.Sleep(500 * time.Millisecond)
+			settings = daemonSettingsForSnapshot(settings, m.daemonStatus.Snapshot)
 		}
 
 		if err := m.daemonManager.Start(settings); err != nil {
@@ -535,7 +562,11 @@ const daemonGracePeriod = 30 * time.Second
 func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 	settings := config.GetDaemonSettings()
 	source := sourceLabel(msg.source)
-	if source != "Embedded" && (msg.snapshot.Managed || msg.snapshot.Running) {
+	// Only a process started by the daemon manager (snapshot.Managed) counts
+	// as "Managed Local". A daemon that merely runs or is online was detected
+	// externally (External Local) or via systemd (System Daemon) — relabeling
+	// it as managed would claim ownership of a process we don't control.
+	if source != "Embedded" && msg.snapshot.Managed {
 		source = "Managed Local"
 	}
 	if settings.Mode == "embedded" && source == "Unknown" {
@@ -553,10 +584,17 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 	if source == "Embedded" {
 		m.daemonManagedSince = time.Time{}
 	} else if msg.info.IsOnline && msg.info.IsHealthy {
-		source = "Managed Local"
-		running = true
-		managed = true
-		m.daemonManagedSince = time.Time{}
+		// The daemon is demonstrably up. Claim "Managed Local" only when the
+		// manager owns the process; otherwise keep the detected source
+		// (External Local / System Daemon) and just reflect that it's running.
+		if msg.snapshot.Managed {
+			source = "Managed Local"
+			running = true
+			managed = true
+			m.daemonManagedSince = time.Time{}
+		} else {
+			running = true
+		}
 	} else if inGrace {
 		if settings.Mode == "embedded" {
 			source = "Embedded"
@@ -567,38 +605,53 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		managed = true
 	} else {
 		m.daemonManagedSince = time.Time{}
+		// A managed process that has exited is no longer managed — present it
+		// as a stopped, startable node so the page offers Start (and the
+		// footer's Stop shortcut never becomes a no-op).
+		if source == "Managed Local" && !managed {
+			source = "Planned Local"
+		}
 	}
 
+	network := titleDaemonNetwork(firstNonEmpty(msg.snapshot.Network, settings.Network))
+	info := classifyDaemonSync(msg.info, network, msg.snapshot.PeerHeight)
+
 	baseline := pages.DaemonStatusSnapshot{
-		Running:           running,
-		Managed:           managed,
-		BinaryReady:       source == "Embedded" || settings.Mode == "embedded" || fileExists(binaryPath),
-		Source:            source,
-		PID:               msg.snapshot.PID,
-		Network:           titleDaemonNetwork(firstNonEmpty(msg.snapshot.Network, settings.Network)),
-		BinaryPath:        binaryPath,
-		DataDir:           dataDir,
-		RPCBind:           rpcBind,
-		P2PBind:           p2pBind,
-		IntegratorAddress: settings.IntegratorAddress,
-		LastError:         firstNonEmpty(msg.err, msg.snapshot.LastError, m.lastEmbeddedError),
-		IsOnline:          msg.info.IsOnline,
-		IsHealthy:         msg.info.IsHealthy,
-		IsSynced:          msg.info.IsSynced,
-		IsBootstrapping:   msg.info.IsBootstrapping,
-		BlockHeight:       msg.info.Height,
-		StableHeight:      msg.info.StableHeight,
-		TopoHeight:        msg.info.TopoHeight,
-		Version:           msg.info.Version,
-		Difficulty:        msg.info.Difficulty,
-		AvgBlockTime:      msg.info.AvgBlockTime,
-		IncomingPeers:     msg.info.IncomingPeers,
-		OutgoingPeers:     msg.info.OutgoingPeers,
-		KnownPeers:        msg.info.KnownPeers,
-		Uptime:            msg.info.Uptime,
-		TxPoolSize:        msg.info.TxPoolSize,
-		Hashrate1hr:       msg.info.Hashrate1hr,
-		Hashrate1d:        msg.info.Hashrate1d,
+		Running:               running,
+		Managed:               managed,
+		BinaryReady:           source == "Embedded" || settings.Mode == "embedded" || fileExists(binaryPath),
+		Source:                source,
+		PID:                   msg.snapshot.PID,
+		Network:               network,
+		BinaryPath:            binaryPath,
+		DataDir:               dataDir,
+		RPCBind:               rpcBind,
+		P2PBind:               p2pBind,
+		GetWorkBind:           msg.snapshot.GetWorkBind,
+		IntegratorAddress:     settings.IntegratorAddress,
+		LaunchArgs:            msg.snapshot.LaunchArgs,
+		LastError:             firstNonEmpty(msg.err, msg.snapshot.LastError, m.lastEmbeddedError),
+		IsOnline:              info.IsOnline,
+		IsHealthy:             info.IsHealthy,
+		IsSynced:              info.IsSynced,
+		IsSyncing:             info.IsSyncing,
+		IsBootstrapping:       info.IsBootstrapping,
+		IsFinalizingBootstrap: msg.snapshot.IsFinalizingBootstrap || info.IsFinalizingBootstrap,
+		BlockHeight:           info.Height,
+		StableHeight:          info.StableHeight,
+		TopoHeight:            info.TopoHeight,
+		PeerHeight:            info.PeerHeight,
+		SyncProgress:          info.SyncProgress,
+		Version:               info.Version,
+		Difficulty:            info.Difficulty,
+		AvgBlockTime:          info.AvgBlockTime,
+		IncomingPeers:         info.IncomingPeers,
+		OutgoingPeers:         info.OutgoingPeers,
+		KnownPeers:            info.KnownPeers,
+		Uptime:                info.Uptime,
+		TxPoolSize:            info.TxPoolSize,
+		Hashrate1hr:           info.Hashrate1hr,
+		Hashrate1d:            info.Hashrate1d,
 	}
 
 	m.daemonStatus.SetSnapshot(baseline)
@@ -612,10 +665,10 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 	} else {
 		m.daemonLogs.SetEmptyHint("")
 	}
-	m.dashboard.SetDaemonBootstrapping(msg.info.IsBootstrapping)
+	m.dashboard.SetDaemonBootstrapping(info.IsBootstrapping)
 
 	if msg.snapshot.RPCBind != "" {
-		m.welcome.SetDaemonStatus(msg.info.IsOnline, msg.info.IsSynced, msg.info.IsBootstrapping, msg.info.IsHealthy, titleDaemonNetwork(msg.snapshot.Network), msg.snapshot.RPCBind, msg.info.Height)
+		m.welcome.SetDaemonStatus(info.IsOnline, info.IsSynced, info.IsBootstrapping, info.IsHealthy, network, msg.snapshot.RPCBind, info.Height, info.PeerHeight, info.SyncProgress, info.IsSyncing)
 	}
 }
 
@@ -626,6 +679,32 @@ func fileExists(path string) bool {
 	}
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// daemonSettingsForSnapshot returns settings that reflect the *running* node
+// when the app did not start it (External Local / System Daemon), so the
+// settings page shows the external node's real config instead of the app's
+// saved template. The app then applies changes via Restart.
+func daemonSettingsForSnapshot(base config.DaemonSettings, snap pages.DaemonStatusSnapshot) config.DaemonSettings {
+	source := strings.TrimSpace(snap.Source)
+	if source != "External Local" && source != "System Daemon" {
+		return base
+	}
+	settings := base
+	settings.Mode = "external"
+	if len(snap.LaunchArgs) > 0 {
+		settings = daemonservice.SettingsFromArgs(snap.LaunchArgs, settings)
+	}
+	settings.RPCBind = firstNonEmpty(snap.RPCBind, settings.RPCBind)
+	settings.P2PBind = firstNonEmpty(snap.P2PBind, settings.P2PBind)
+	settings.GetWorkBind = firstNonEmpty(snap.GetWorkBind, settings.GetWorkBind)
+	settings.DataDir = firstNonEmpty(snap.DataDir, settings.DataDir)
+	settings.BinaryPath = firstNonEmpty(snap.BinaryPath, settings.BinaryPath)
+	settings.IntegratorAddress = firstNonEmpty(snap.IntegratorAddress, settings.IntegratorAddress)
+	if network := strings.TrimSpace(snap.Network); network != "" {
+		settings.Network = strings.ToLower(network)
+	}
+	return settings
 }
 
 func sourceLabel(source string) string {
@@ -657,8 +736,8 @@ func firstNonEmpty(values ...string) string {
 }
 
 func snapshotFromExternal(settings config.DaemonSettings, address string, info wallet.DaemonInfo) daemonservice.Snapshot {
-	pid := daemonservice.FindPIDByAddress(address)
-	return daemonservice.Snapshot{
+	pid := daemonservice.FindDerodPID(address)
+	snap := daemonservice.Snapshot{
 		Running:     info.IsOnline,
 		Managed:     false,
 		PID:         pid,
@@ -669,6 +748,31 @@ func snapshotFromExternal(settings config.DaemonSettings, address string, info w
 		P2PBind:     settings.P2PBind,
 		GetWorkBind: settings.GetWorkBind,
 	}
+	// Reflect the actual running process: read its real command line so the
+	// config/logs shown match the external node, not the app's saved settings.
+	if args := daemonservice.ReadProcessArgs(pid); len(args) > 0 {
+		snap.LaunchArgs = args
+		real := daemonservice.SettingsFromArgs(args, settings)
+		if strings.TrimSpace(real.BinaryPath) != "" {
+			snap.BinaryPath = real.BinaryPath
+		}
+		if strings.TrimSpace(real.DataDir) != "" {
+			snap.DataDir = real.DataDir
+		}
+		if strings.TrimSpace(real.RPCBind) != "" {
+			snap.RPCBind = real.RPCBind
+		}
+		if strings.TrimSpace(real.P2PBind) != "" {
+			snap.P2PBind = real.P2PBind
+		}
+		if strings.TrimSpace(real.GetWorkBind) != "" {
+			snap.GetWorkBind = real.GetWorkBind
+		}
+		if strings.TrimSpace(real.Network) != "" {
+			snap.Network = real.Network
+		}
+	}
+	return snap
 }
 
 func detectSystemdRPC(settings config.DaemonSettings, service systemdservice.ServiceStatus) (string, wallet.DaemonInfo) {
@@ -794,9 +898,10 @@ func snapshotFromSystemd(settings config.DaemonSettings, service systemdservice.
 			serviceState = "inactive"
 		}
 	}
-	return daemonservice.Snapshot{
+	snap := daemonservice.Snapshot{
 		Running:     service.Active,
 		Managed:     false,
+		PID:         daemonservice.FindPIDByAddress(address),
 		Network:     network,
 		BinaryPath:  settings.BinaryPath,
 		DataDir:     settings.DataDir,
@@ -805,6 +910,25 @@ func snapshotFromSystemd(settings config.DaemonSettings, service systemdservice.
 		GetWorkBind: settings.GetWorkBind,
 		LastExit:    serviceState,
 	}
+	if args := argsFromExecStart(service.ExecStart); len(args) > 0 {
+		snap.LaunchArgs = args
+	}
+	return snap
+}
+
+// argsFromExecStart extracts the argv from a systemd ExecStart line such as
+// "{ /usr/bin/derod ; argv[]=derod --testnet --rpc-bind=... }".
+func argsFromExecStart(execStart string) []string {
+	execStart = strings.TrimSpace(execStart)
+	if idx := strings.Index(execStart, " ; argv[]="); idx >= 0 {
+		execStart = execStart[idx+len(" ; argv[]="):]
+	}
+	execStart = strings.Trim(execStart, "{} ")
+	fields := strings.Fields(execStart)
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
 }
 
 func readSystemdLogLines(service systemdservice.ServiceStatus) []string {
@@ -839,8 +963,107 @@ func logSourceLabel(source string) string {
 	}
 }
 
-func readExternalLogLines(settings config.DaemonSettings) []string {
-	logDir := strings.TrimSpace(settings.LogDir)
+const maxExternalLogLines = 200
+
+// readExternalLogLines finds logs for a daemon the app did not start. It
+// tries, in order: the process's own stdout/stderr when redirected to files,
+// derod's own log file (derod writes <binary>.log, or <log-dir>/derod.log),
+// then the configured log directory scan.
+func readExternalLogLines(settings config.DaemonSettings, snap daemonservice.Snapshot) []string {
+	if lines := tailProcessFdLogs(snap.PID); len(lines) > 0 {
+		return lines
+	}
+	for _, candidate := range derodLogCandidates(settings, snap) {
+		if lines := tailFileLines(candidate, maxExternalLogLines); len(lines) > 0 {
+			return lines
+		}
+	}
+	for _, dir := range externalLogDirs(settings, snap) {
+		if lines := scanLogDir(dir); len(lines) > 0 {
+			return lines
+		}
+	}
+	return nil
+}
+
+// externalLogDirs lists directories that may hold the external daemon's log
+// file: the configured log dir, the daemon's data dir(s), and ~/.dero.
+func externalLogDirs(settings config.DaemonSettings, snap daemonservice.Snapshot) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(d string) {
+		d = strings.TrimSpace(d)
+		if d != "" && !seen[d] {
+			seen[d] = true
+			out = append(out, d)
+		}
+	}
+	add(settings.LogDir)
+	add(snap.DataDir)
+	add(settings.DataDir)
+	if home, err := os.UserHomeDir(); err == nil {
+		add(filepath.Join(home, ".dero"))
+	}
+	return out
+}
+
+// derodLogCandidates lists plausible log file paths for an external daemon
+// based on its real command line and the app's saved settings.
+func derodLogCandidates(settings config.DaemonSettings, snap daemonservice.Snapshot) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	if len(snap.LaunchArgs) > 0 {
+		real := daemonservice.SettingsFromArgs(snap.LaunchArgs, settings)
+		if logDir := strings.TrimSpace(real.LogDir); logDir != "" {
+			add(filepath.Join(logDir, "derod.log"))
+		}
+	}
+	for _, binary := range []string{snap.BinaryPath, settings.BinaryPath} {
+		binary = strings.TrimSpace(binary)
+		if binary == "" {
+			continue
+		}
+		add(binary + ".log")
+		add(filepath.Join(filepath.Dir(binary), "derod.log"))
+	}
+	return out
+}
+
+// tailProcessFdLogs tails the process's stdout/stderr when they are regular
+// files (e.g. started with > logfile 2>&1). Returns nil when they are pipes.
+func tailProcessFdLogs(pid int) []string {
+	if pid <= 0 {
+		return nil
+	}
+	for _, fd := range []string{"1", "2"} {
+		target, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", pid, fd))
+		if err != nil {
+			continue
+		}
+		if !filepath.IsAbs(target) {
+			continue
+		}
+		info, err := os.Stat(target)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		if lines := tailFileLines(target, maxExternalLogLines); len(lines) > 0 {
+			return lines
+		}
+	}
+	return nil
+}
+
+// scanLogDir returns the newest derod-like log file in a directory.
+func scanLogDir(logDir string) []string {
+	logDir = strings.TrimSpace(logDir)
 	if logDir == "" {
 		return nil
 	}
@@ -871,9 +1094,14 @@ func readExternalLogLines(settings config.DaemonSettings) []string {
 	if latestPath == "" {
 		return nil
 	}
-	data, err := os.ReadFile(latestPath)
+	return tailFileLines(latestPath, maxExternalLogLines)
+}
+
+// tailFileLines returns the last max non-empty lines of a file.
+func tailFileLines(path string, max int) []string {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return []string{"Failed to read daemon log file: " + err.Error()}
+		return nil
 	}
 	lines := strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n")
 	filtered := make([]string, 0, len(lines))
@@ -883,8 +1111,8 @@ func readExternalLogLines(settings config.DaemonSettings) []string {
 			filtered = append(filtered, line)
 		}
 	}
-	if len(filtered) > 200 {
-		filtered = filtered[len(filtered)-200:]
+	if len(filtered) > max {
+		filtered = filtered[len(filtered)-max:]
 	}
 	return filtered
 }

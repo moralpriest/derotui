@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/deroproject/dero-wallet-cli/internal/services/installer"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 )
 
@@ -34,11 +35,14 @@ type DaemonStatusSnapshot struct {
 	DataDir               string
 	RPCBind               string
 	P2PBind               string
+	GetWorkBind           string
 	IntegratorAddress     string
+	LaunchArgs            []string
 	LastError             string
 	IsOnline              bool
 	IsHealthy             bool
 	IsSynced              bool
+	IsSyncing             bool
 	IsBootstrapping       bool
 	IsFinalizingBootstrap bool
 	BlockHeight           uint64
@@ -59,29 +63,55 @@ type DaemonStatusSnapshot struct {
 }
 
 type DaemonStatusModel struct {
-	Snapshot      DaemonStatusSnapshot
-	Downloading   bool
-	DownloadError string
-	InstallResult string
-	wantStart     bool
-	wantStop      bool
-	wantRestart   bool
-	wantLogs      bool
-	wantSettings  bool
-	wantInstall   bool
-	cancelled     bool
-	width         int
-	height        int
+	Snapshot         DaemonStatusSnapshot
+	Downloading      bool
+	DownloadError    string
+	InstallResult    string
+	InstallPlan      *installer.Plan
+	wantStart        bool
+	wantStop         bool
+	wantRestart      bool
+	wantLogs         bool
+	wantSettings     bool
+	wantInstall      bool
+	wantInstallApply bool
+	wantInstallDone  bool
+	cancelled        bool
+	width            int
+	height           int
 }
+
+const daemonStatusContentWidth = 70
+const daemonStatusLabelWidth = 12
 
 func NewDaemonStatus() DaemonStatusModel  { return DaemonStatusModel{} }
 func (d DaemonStatusModel) Init() tea.Cmd { return nil }
+
+func padLabelText(label string) string {
+	for len(label) < daemonStatusLabelWidth {
+		label += " "
+	}
+	return label
+}
 
 func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		d.DownloadError = ""
 		d.InstallResult = ""
+		// While an install plan is awaiting confirmation, only the confirm
+		// keys apply — regular page keys (start/stop/etc.) must not fire.
+		if d.InstallPlan != nil {
+			switch {
+			case msg.String() == "y" || msg.String() == "Y":
+				d.wantInstallApply = true
+			case msg.String() == "n" || msg.String() == "N":
+				d.wantInstallDone = true
+			case key.Matches(msg, pageEscKeys):
+				d.wantInstallDone = true
+			}
+			return d, nil
+		}
 		switch {
 		case key.Matches(msg, pageEscKeys):
 			d.cancelled = true
@@ -106,15 +136,10 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 }
 
 func (d DaemonStatusModel) View() string {
-	const contentWidth = 70
-	const labelWidth = 12
+	const contentWidth = daemonStatusContentWidth
+	const labelWidth = daemonStatusLabelWidth
 
-	padLabel := func(label string) string {
-		for len(label) < labelWidth {
-			label += " "
-		}
-		return label
-	}
+	padLabel := padLabelText
 
 	sectionHeader := func(title string, clr color.Color) string {
 		prefix := "── "
@@ -173,7 +198,10 @@ func (d DaemonStatusModel) View() string {
 		rows = append(rows, row("Tx Pool:", styles.TextStyle.Render(fmt.Sprintf("%d pending", d.Snapshot.TxPoolSize))))
 	}
 	if d.Snapshot.Hashrate1hr > 0 || d.Snapshot.Hashrate1d > 0 {
-		rows = append(rows, row("Hashrate:", d.renderHashrateLine()))
+		// These are derod's estimate of its own connected miners' hashrate
+		// (network hashrate x its share), printed as "Avg Mining HR" by the
+		// daemon CLI — not the network hashrate. Label accordingly.
+		rows = append(rows, row("Mining HR:", d.renderHashrateLine()))
 	}
 
 	rows = append(rows, "", sectionHeader("Configuration", styles.ColorAccent))
@@ -195,9 +223,52 @@ func (d DaemonStatusModel) View() string {
 		)
 	}
 
+	if d.InstallPlan != nil && !d.Downloading {
+		rows = append(rows, "", sectionHeader("Install derod", styles.ColorAccent))
+		rows = append(rows, d.renderInstallPlan()...)
+	}
+
 	rows = append(rows, "", d.renderFooter())
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// renderInstallPlan shows the fetched install plan and asks for confirmation
+// before any system-level changes are made.
+func (d DaemonStatusModel) renderInstallPlan() []string {
+	plan := d.InstallPlan
+	if plan == nil {
+		return nil
+	}
+	val := func(label, v string) string {
+		if strings.TrimSpace(v) == "" {
+			v = "Not set"
+		}
+		return styles.MutedStyle.Render(padLabelText(label)) + styles.TextStyle.Render(truncatePlain(v, daemonStatusContentWidth-daemonStatusLabelWidth-1))
+	}
+	rows := []string{
+		val("Type:", plan.ServiceType),
+		val("Release:", strings.TrimSpace(plan.ReleaseTag)),
+		val("Binary:", plan.BinaryTarget),
+		val("Data:", plan.DataDir),
+		val("RPC:", plan.RPCBind),
+		val("P2P:", plan.P2PBind),
+		val("GetWork:", plan.GetWorkBind),
+	}
+	if strings.TrimSpace(plan.NodeTag) != "" {
+		rows = append(rows, val("Node Tag:", plan.NodeTag))
+	}
+	if strings.TrimSpace(plan.IntegratorAddress) != "" {
+		rows = append(rows, val("Integrator:", plan.IntegratorAddress))
+	}
+	if strings.TrimSpace(plan.Network) != "" {
+		rows = append(rows, val("Network:", plan.Network))
+	}
+	if strings.TrimSpace(plan.FallbackNote) != "" {
+		rows = append(rows, "", styles.MutedStyle.Render("  "+plan.FallbackNote))
+	}
+	rows = append(rows, "", styles.WarningStyle.Render("  [Y] Install \u2022 [N]/Esc Cancel"))
+	return rows
 }
 
 func (d DaemonStatusModel) renderFooter() string {
@@ -223,7 +294,10 @@ func (d DaemonStatusModel) renderFooter() string {
 		parts = append(parts, k("L")+" "+m("Logs"))
 	}
 
-	if !isEmbedded {
+	// Install only makes sense when nothing is configured/running yet —
+	// installing a systemd unit while a daemon is up would start a conflicting
+	// second node on the same ports.
+	if !isEmbedded && !d.Snapshot.Running && !d.Snapshot.Managed {
 		parts = append(parts, k("I")+" "+m("Install"))
 	}
 	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
@@ -243,17 +317,15 @@ func (d DaemonStatusModel) renderStateLine() string {
 			return styles.WarningStyle.Render("Finalizing Bootstrap...")
 		}
 		if d.Snapshot.IsBootstrapping {
-			pct := fmt.Sprintf("%.1f%%", d.Snapshot.SyncProgress)
-			return styles.WarningStyle.Render("Bootstrapping " + pct)
+			return styles.BootstrappingStyle.Render("Bootstrapping " + formatSyncPct(d.Snapshot.SyncProgress))
 		}
 		if d.Snapshot.IsSynced {
 			return styles.SuccessStyle.Render("Synced")
 		}
-		if d.Snapshot.SyncProgress > 0 {
-			pct := fmt.Sprintf("%.1f%%", d.Snapshot.SyncProgress)
-			return styles.WarningStyle.Render("Syncing " + pct)
+		if d.Snapshot.IsSyncing {
+			return styles.WarningStyle.Render("Syncing " + formatSyncPct(d.Snapshot.SyncProgress))
 		}
-		return styles.WarningStyle.Render("Syncing")
+		return styles.WarningStyle.Render("Online")
 	}
 	if d.Snapshot.Running {
 		return styles.WarningStyle.Render("Starting")
@@ -273,8 +345,7 @@ func (d DaemonStatusModel) renderRPCLine() string {
 			return styles.WarningStyle.Render("Finalizing Bootstrap...")
 		}
 		if d.Snapshot.IsBootstrapping {
-			pct := fmt.Sprintf("%.1f%%", d.Snapshot.SyncProgress)
-			return styles.WarningStyle.Render("Bootstrapping " + pct)
+			return styles.BootstrappingStyle.Render("Bootstrapping " + formatSyncPct(d.Snapshot.SyncProgress))
 		}
 		if d.Snapshot.IsSynced {
 			return styles.SuccessStyle.Render("Healthy")
@@ -299,18 +370,43 @@ func (d DaemonStatusModel) renderMetaLine() string {
 func (d DaemonStatusModel) renderHeightLine() string {
 	if d.Snapshot.BlockHeight == 0 {
 		if d.Snapshot.PeerHeight > 0 {
-			return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(fmt.Sprintf("%d", d.Snapshot.PeerHeight))
+			return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(formatUint64(uint64(d.Snapshot.PeerHeight)))
 		}
 		return styles.MutedStyle.Render("-")
 	}
 
 	heightStr := formatUint64(d.Snapshot.BlockHeight)
 
+	if d.Snapshot.PeerHeight > 0 {
+		target := formatUint64(uint64(d.Snapshot.PeerHeight))
+		if d.Snapshot.IsSynced {
+			return styles.SuccessStyle.Render(heightStr) +
+				styles.MutedStyle.Render(" / ") +
+				styles.SuccessStyle.Render(target) +
+				styles.SuccessStyle.Render(" ("+formatSyncPct(d.Snapshot.SyncProgress)+")")
+		}
+		heightStr = styles.WarningStyle.Render(heightStr) +
+			styles.MutedStyle.Render(" / ") +
+			styles.TextStyle.Render(target) +
+			styles.MutedStyle.Render(" (") +
+			styles.WarningStyle.Render(formatSyncPct(d.Snapshot.SyncProgress)) +
+			styles.MutedStyle.Render(")")
+	}
+
 	if !d.Snapshot.IsSynced && d.Snapshot.StableHeight > 0 && d.Snapshot.StableHeight < int64(d.Snapshot.BlockHeight) {
 		heightStr += styles.MutedStyle.Render("  •  Confirmed ") + styles.TextStyle.Render(fmt.Sprintf("%d", d.Snapshot.StableHeight))
 	}
 
 	return heightStr
+}
+
+// formatSyncPct renders a sync progress percentage, using "<0.1%" so a node
+// that just started its genesis sync doesn't show a meaningless "0.0%".
+func formatSyncPct(progress float64) string {
+	if progress > 0 && progress < 0.1 {
+		return "<0.1%"
+	}
+	return fmt.Sprintf("%.1f%%", progress)
 }
 
 func (d DaemonStatusModel) renderPeersLine() string {
@@ -418,7 +514,15 @@ func (d DaemonStatusModel) WantRestart() bool                          { return 
 func (d DaemonStatusModel) WantLogs() bool                             { return d.wantLogs }
 func (d DaemonStatusModel) WantSettings() bool                         { return d.wantSettings }
 func (d DaemonStatusModel) WantInstall() bool                          { return d.wantInstall }
+func (d DaemonStatusModel) WantInstallApply() bool                     { return d.wantInstallApply }
+func (d DaemonStatusModel) WantInstallDone() bool                      { return d.wantInstallDone }
 func (d DaemonStatusModel) Cancelled() bool                            { return d.cancelled }
+func (d *DaemonStatusModel) SetInstallPlan(plan *installer.Plan)       { d.InstallPlan = plan }
+func (d *DaemonStatusModel) ResetInstall() {
+	d.InstallPlan = nil
+	d.wantInstallApply = false
+	d.wantInstallDone = false
+}
 func (d *DaemonStatusModel) ResetActions() {
 	d.wantStart = false
 	d.wantStop = false
@@ -426,5 +530,7 @@ func (d *DaemonStatusModel) ResetActions() {
 	d.wantLogs = false
 	d.wantSettings = false
 	d.wantInstall = false
+	d.wantInstallApply = false
+	d.wantInstallDone = false
 	d.cancelled = false
 }

@@ -373,6 +373,9 @@ func rebuildStyles() {
 	WarningStyle = lipgloss.NewStyle().
 		Foreground(ColorWarning)
 
+	BootstrappingStyle = lipgloss.NewStyle().
+		Foreground(ColorSimulator)
+
 	BoxStyle = lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(ColorBorder).
@@ -516,6 +519,7 @@ var (
 	SuccessStyle          lipgloss.Style
 	ErrorStyle            lipgloss.Style
 	WarningStyle          lipgloss.Style
+	BootstrappingStyle    lipgloss.Style
 	BoxStyle              lipgloss.Style
 	SelectedBoxStyle      lipgloss.Style
 	ContainerStyle        lipgloss.Style

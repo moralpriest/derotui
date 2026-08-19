@@ -98,6 +98,18 @@ func (m *Manager) Stop() error {
 		return err
 	}
 	m.appendLog("derod stop requested")
+	// Wait for wait() to observe the exit so a snapshot taken right after
+	// Stop returns reflects the stopped state (Running=false, Managed=false).
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		m.mu.RLock()
+		running := m.snapshot.Running
+		m.mu.RUnlock()
+		if !running {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	return nil
 }
 
@@ -152,11 +164,11 @@ func FindPIDByAddress(addr string) int {
 	}
 
 	var targetHex string
+	var anyHex string
 	if ip4 != nil {
 		targetHex = fmt.Sprintf("%02X%02X%02X%02X:%04X", ip4[3], ip4[2], ip4[1], ip4[0], portNum)
 		// Also check 0.0.0.0 binding
-		anyHex := fmt.Sprintf("00000000:%04X", portNum)
-		targetHex = targetHex + "|" + anyHex
+		anyHex = fmt.Sprintf("00000000:%04X", portNum)
 	} else {
 		// IPv6 hex representation in /proc/net/tcp6 is mixed endian per 4-byte group
 		ip6 := ip.To16()
@@ -179,7 +191,7 @@ func FindPIDByAddress(addr string) int {
 				continue
 			}
 			localAddr := fields[1]
-			if strings.EqualFold(localAddr, targetHex) {
+			if strings.EqualFold(localAddr, targetHex) || (anyHex != "" && strings.EqualFold(localAddr, anyHex)) {
 				inode := fields[9]
 				if pid := findPIDByInode(inode); pid > 0 {
 					return pid
@@ -287,6 +299,7 @@ func (m *Manager) wait() {
 		m.logs = append(m.logs, time.Now().Format("15:04:05 ")+" derod exited")
 	}
 	m.snapshot.Running = false
+	m.snapshot.Managed = false
 	m.snapshot.PID = 0
 	m.cmd = nil
 }

@@ -2,7 +2,16 @@
 
 package ui
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/deroproject/dero-wallet-cli/internal/config"
+	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
+	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
+	"github.com/deroproject/dero-wallet-cli/internal/wallet"
+)
 
 func TestPreferredDaemonAddressStickyWins(t *testing.T) {
 	m := NewModel()
@@ -149,5 +158,171 @@ func TestValidateMiningAddressForDaemonMatch(t *testing.T) {
 	err = validateMiningAddressForDaemon("deto1abc123", "testnet")
 	if err != nil {
 		t.Fatalf("expected no error for matching testnet address, got %v", err)
+	}
+}
+
+// A daemon detected on a local port that the app did NOT start must stay
+// labeled "External Local" and must not be marked as managed.
+func TestApplyDaemonManagerMsgExternalStaysExternal(t *testing.T) {
+	m := NewModel()
+	msg := daemonManagerMsg{
+		source: "External Local",
+		snapshot: daemonservice.Snapshot{
+			Running: true,
+			Managed: false,
+			PID:     4242,
+			RPCBind: "127.0.0.1:10102",
+		},
+		info: wallet.DaemonInfo{IsOnline: true, IsHealthy: true, IsSynced: true, Network: "mainnet", Height: 100},
+	}
+	m.applyDaemonManagerMsg(msg)
+
+	snap := m.daemonStatus.Snapshot
+	if snap.Source != "External Local" {
+		t.Fatalf("expected source External Local, got %q", snap.Source)
+	}
+	if snap.Managed {
+		t.Fatal("external daemon must not be marked managed")
+	}
+	if !snap.Running {
+		t.Fatal("external daemon should be marked running")
+	}
+	if snap.PID != 4242 {
+		t.Fatalf("expected PID 4242 to be preserved, got %d", snap.PID)
+	}
+}
+
+// A daemon started by the app's manager stays "Managed Local" even when the
+// detector reported a generic source (e.g. right after Start).
+func TestApplyDaemonManagerMsgManagedStaysManaged(t *testing.T) {
+	m := NewModel()
+	msg := daemonManagerMsg{
+		source: "",
+		snapshot: daemonservice.Snapshot{
+			Running: true,
+			Managed: true,
+			PID:     123,
+			RPCBind: "127.0.0.1:10102",
+		},
+		info: wallet.DaemonInfo{IsOnline: true, IsHealthy: true, IsSynced: true},
+	}
+	m.applyDaemonManagerMsg(msg)
+
+	snap := m.daemonStatus.Snapshot
+	if snap.Source != "Managed Local" {
+		t.Fatalf("expected source Managed Local, got %q", snap.Source)
+	}
+	if !snap.Managed {
+		t.Fatal("managed daemon should stay marked managed")
+	}
+	if !snap.Running {
+		t.Fatal("managed daemon should be marked running")
+	}
+}
+
+// A systemd-managed derod keeps its own label and is not claimed as managed.
+func TestApplyDaemonManagerMsgSystemDStaysSystemDaemon(t *testing.T) {
+	m := NewModel()
+	msg := daemonManagerMsg{
+		source: "System Daemon",
+		snapshot: daemonservice.Snapshot{
+			Running: true,
+			Managed: false,
+		},
+		info: wallet.DaemonInfo{IsOnline: true, IsHealthy: true, IsSynced: true},
+	}
+	m.applyDaemonManagerMsg(msg)
+
+	snap := m.daemonStatus.Snapshot
+	if snap.Source != "System Daemon" {
+		t.Fatalf("expected source System Daemon, got %q", snap.Source)
+	}
+	if snap.Managed {
+		t.Fatal("system daemon must not be marked managed")
+	}
+	if !snap.Running {
+		t.Fatal("system daemon should be marked running")
+	}
+}
+
+// Opening settings for an external daemon must show the running node's real
+// config (from its command line), not the app's saved template.
+func TestDaemonSettingsForSnapshotExternalUsesRealConfig(t *testing.T) {
+	base := config.DaemonSettings{
+		Mode:       "embedded",
+		DataDir:    "/home/user/.derotui",
+		RPCBind:    "127.0.0.1:10102",
+		BinaryPath: "/home/user/.derotui/derod",
+	}
+	snap := pages.DaemonStatusSnapshot{
+		Source:  "External Local",
+		Network: "mainnet",
+		RPCBind: "0.0.0.0:10102",
+		LaunchArgs: []string{
+			"/opt/dero/derod",
+			"--data-dir=/opt/dero/data",
+			"--rpc-bind=0.0.0.0:10102",
+			"--getwork-bind=0.0.0.0:10100",
+			"--node-tag=my-node",
+		},
+	}
+
+	got := daemonSettingsForSnapshot(base, snap)
+
+	if got.Mode != "external" {
+		t.Errorf("Mode = %q, want external", got.Mode)
+	}
+	if got.BinaryPath != "/opt/dero/derod" {
+		t.Errorf("BinaryPath = %q, want /opt/dero/derod", got.BinaryPath)
+	}
+	if got.DataDir != "/opt/dero/data" {
+		t.Errorf("DataDir = %q, want /opt/dero/data", got.DataDir)
+	}
+	if got.RPCBind != "0.0.0.0:10102" {
+		t.Errorf("RPCBind = %q", got.RPCBind)
+	}
+	if got.GetWorkBind != "0.0.0.0:10100" {
+		t.Errorf("GetWorkBind = %q", got.GetWorkBind)
+	}
+	if got.NodeTag != "my-node" {
+		t.Errorf("NodeTag = %q", got.NodeTag)
+	}
+}
+
+// Settings for a managed daemon must not be touched by the snapshot.
+func TestDaemonSettingsForSnapshotManagedUnchanged(t *testing.T) {
+	base := config.DaemonSettings{Mode: "embedded", DataDir: "/home/user/.derotui"}
+	snap := pages.DaemonStatusSnapshot{
+		Source:     "Managed Local",
+		DataDir:    "/somewhere/else",
+		LaunchArgs: []string{"/opt/dero/derod", "--data-dir=/opt/dero/data"},
+	}
+
+	got := daemonSettingsForSnapshot(base, snap)
+	if got.DataDir != "/home/user/.derotui" {
+		t.Errorf("DataDir should stay at base for managed daemon, got %q", got.DataDir)
+	}
+}
+
+func TestTailFileLinesReturnsLastNonEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "derod.log")
+	content := ""
+	for i := 1; i <= 205; i++ {
+		content += "line " + string(rune('0'+i%10)) + "\n"
+	}
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := tailFileLines(path, maxExternalLogLines)
+	if len(lines) != maxExternalLogLines {
+		t.Fatalf("expected %d lines, got %d", maxExternalLogLines, len(lines))
+	}
+	if lines[0] == "" || lines[len(lines)-1] == "" {
+		t.Fatal("empty lines should be trimmed")
+	}
+	if got := tailFileLines(filepath.Join(dir, "missing.log"), maxExternalLogLines); got != nil {
+		t.Fatalf("expected nil for missing file, got %v", got)
 	}
 }

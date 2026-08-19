@@ -23,7 +23,18 @@ type RPCBackend interface {
 	Stop()
 	IsRunning() bool
 	GetHashrate() uint64
+	// GetBlocks returns full blocks found; GetMinis returns accepted
+	// miniblocks. The engine tracks them separately (go-miner splits them the
+	// same way in its status line).
 	GetBlocks() uint64
+	GetMinis() uint64
+	GetRejected() uint64
+	GetHeight() uint64
+	GetDifficulty() uint64
+	// GetHashes returns the cumulative number of hash computations.
+	GetHashes() uint64
+	// GetUptime returns how long the current mining session has been running.
+	GetUptime() time.Duration
 	GetThreads() int
 	GetAddress() string
 	GetDaemonHost() string
@@ -45,8 +56,14 @@ type EngineMiner struct {
 	engine   *engine.Engine
 	cancel   context.CancelFunc
 	running  atomic.Bool
+	started  time.Time
 	hashrate atomic.Uint64
-	blocks   atomic.Uint64
+	blocks   atomic.Uint64 // full blocks
+	minis    atomic.Uint64 // accepted miniblocks
+	rejected atomic.Uint64
+	height   atomic.Uint64
+	diff     atomic.Uint64
+	hashes   atomic.Uint64
 }
 
 // NewEngineMiner creates a new engine-backed miner instance.
@@ -88,6 +105,7 @@ func (m *EngineMiner) Start() error {
 	m.mu.Lock()
 	m.engine = eng
 	m.cancel = cancel
+	m.started = time.Now()
 	m.mu.Unlock()
 	m.running.Store(true)
 	go m.statsLoop(ctx)
@@ -116,8 +134,33 @@ func (m *EngineMiner) IsRunning() bool { return m.running.Load() }
 // GetHashrate returns the current hashrate in H/s (1s-refreshed).
 func (m *EngineMiner) GetHashrate() uint64 { return m.hashrate.Load() }
 
-// GetBlocks returns accepted shares (full blocks + miniblocks) found.
+// GetBlocks returns full blocks found (engine Stats.Blocks).
 func (m *EngineMiner) GetBlocks() uint64 { return m.blocks.Load() }
+
+// GetMinis returns accepted miniblocks found (engine Stats.MiniBlocks).
+func (m *EngineMiner) GetMinis() uint64 { return m.minis.Load() }
+
+// GetRejected returns rejected shares (engine Stats.Rejected).
+func (m *EngineMiner) GetRejected() uint64 { return m.rejected.Load() }
+
+// GetHeight returns the chain height of the current job (engine Stats.Height).
+func (m *EngineMiner) GetHeight() uint64 { return m.height.Load() }
+
+// GetDifficulty returns the difficulty of the current job (engine Stats.Difficulty).
+func (m *EngineMiner) GetDifficulty() uint64 { return m.diff.Load() }
+
+// GetHashes returns the cumulative hash count (engine Stats.Hashes).
+func (m *EngineMiner) GetHashes() uint64 { return m.hashes.Load() }
+
+// GetUptime returns the duration the current mining session has been running.
+func (m *EngineMiner) GetUptime() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.running.Load() || m.started.IsZero() {
+		return 0
+	}
+	return time.Since(m.started)
+}
 
 // GetThreads returns the configured thread count.
 func (m *EngineMiner) GetThreads() int { return m.cfg.Threads }
@@ -148,7 +191,12 @@ func (m *EngineMiner) statsLoop(ctx context.Context) {
 			}
 			s := eng.Stats()
 			m.hashrate.Store(uint64(s.Hashrate))
-			m.blocks.Store(s.Blocks + s.MiniBlocks)
+			m.blocks.Store(s.Blocks)
+			m.minis.Store(s.MiniBlocks)
+			m.rejected.Store(s.Rejected)
+			m.height.Store(s.Height)
+			m.diff.Store(s.Difficulty)
+			m.hashes.Store(s.Hashes)
 		}
 	}
 }

@@ -238,8 +238,11 @@ func (s *helperState) status() (Snapshot, wallet.DaemonInfo, []string) {
 		TopoHeight:      topoHeight,
 		IsOnline:        true,
 		IsHealthy:       true,
-		IsSynced:        height > 0 && topoHeight == height && peerHeight > 0 && height >= peerHeight,
+		IsSynced:        peerHeight > 0 && height > 0 && height >= peerHeight,
+		IsSyncing:       peerHeight > 0 && height > 0 && height < peerHeight,
 		IsBootstrapping: height > 0 && topoHeight != height,
+		PeerHeight:      peerHeight,
+		SyncProgress:    syncProgressRatio(height, peerHeight),
 		Difficulty:      difficulty,
 		IncomingPeers:   peers,
 		OutgoingPeers:   0,
@@ -278,13 +281,7 @@ func (s *helperState) syncState() (int64, float64, bool) {
 	if peerHeight <= 0 || height <= 0 {
 		return peerHeight, 0, finalizing
 	}
-	progress := float64(height) / float64(peerHeight) * 100
-	if progress > 100 {
-		progress = 100
-	}
-	if progress < 0 {
-		progress = 0
-	}
+	progress := syncProgressRatio(height, peerHeight)
 	return peerHeight, progress, finalizing
 }
 
@@ -315,11 +312,15 @@ func (s *helperState) minerStatus() helperMinerStatus {
 		return helperMinerStatus{}
 	}
 	return helperMinerStatus{
-		Running:  s.miner.IsRunning(),
-		Hashrate: s.miner.GetHashrate(),
-		Blocks:   s.miner.GetBlocks(),
-		Threads:  s.miner.GetThreads(),
-		Address:  s.miner.GetAddress(),
+		Running:    s.miner.IsRunning(),
+		Hashrate:   s.miner.GetHashrate(),
+		Blocks:     s.miner.GetBlocks(),
+		Height:     s.miner.GetHeight(),
+		Difficulty: s.miner.GetDifficulty(),
+		Hashes:     s.miner.GetHashes(),
+		Uptime:     s.miner.GetUptime(),
+		Threads:    s.miner.GetThreads(),
+		Address:    s.miner.GetAddress(),
 	}
 }
 
@@ -376,4 +377,19 @@ func nonNegativeHeight(height int64) uint64 {
 		return 0
 	}
 	return uint64(height)
+}
+
+// syncProgressRatio returns height/peerHeight as a percentage (0..100).
+func syncProgressRatio(height, peerHeight int64) float64 {
+	if peerHeight <= 0 || height <= 0 {
+		return 0
+	}
+	progress := float64(height) / float64(peerHeight) * 100
+	if progress > 100 {
+		progress = 100
+	}
+	if progress < 0 {
+		progress = 0
+	}
+	return progress
 }

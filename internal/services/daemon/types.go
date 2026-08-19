@@ -20,4 +20,10 @@ type Snapshot struct {
 	LastExit      string
 	LaunchArgs    []string
 	RestartNeeded bool
+	// Sync state, populated for the embedded helper (which has in-process
+	// access to the peer height). Remote/managed nodes leave these zero and
+	// the UI derives state from a network reference height instead.
+	PeerHeight            int64
+	SyncProgress          float64
+	IsFinalizingBootstrap bool
 }

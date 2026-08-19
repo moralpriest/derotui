@@ -49,11 +49,14 @@ type Command struct {
 type DaemonStatusInfo struct {
 	IsOnline        bool
 	IsSynced        bool
+	IsSyncing       bool
 	IsBootstrapping bool
 	IsHealthy       bool
 	Network         string
 	Address         string
 	BlockHeight     uint64
+	PeerHeight      int64
+	SyncProgress    float64
 }
 
 // WelcomeModel represents the welcome screen
@@ -74,6 +77,7 @@ type WelcomeModel struct {
 	previousTheme   string
 	IsOnline        bool
 	IsSynced        bool
+	IsSyncing       bool
 	IsBootstrapping bool
 	IsHealthy       bool
 	Network         string
@@ -389,6 +393,7 @@ func (w WelcomeModel) View() string {
 		metaRows = append(metaRows, renderDaemonSummaryLine(DaemonStatusInfo{
 			IsOnline:        w.IsOnline,
 			IsSynced:        w.IsSynced,
+			IsSyncing:       w.IsSyncing,
 			IsBootstrapping: w.IsBootstrapping,
 			IsHealthy:       w.IsHealthy,
 			Network:         w.Network,
@@ -650,35 +655,70 @@ func renderDaemonSummaryLine(daemon DaemonStatusInfo) string {
 		addressLabel = truncateWelcomeAddress(daemon.Address, 16)
 	}
 
-	var statusStyled string
-	if daemon.IsOnline && daemon.IsHealthy {
-		if daemon.IsSynced {
-			statusStyled = styles.SuccessStyle.Render("●")
-		} else {
-			statusStyled = styles.WarningStyle.Render("●")
-		}
-	} else if daemon.IsOnline && !daemon.IsHealthy {
-		statusStyled = styles.WarningStyle.Render("●")
-	} else {
-		statusStyled = styles.ErrorStyle.Render("●")
-	}
+	statusStyled := renderDaemonStateLabel(daemon)
 
-	blockStyled := styles.MutedStyle.Render("-")
-	if daemon.BlockHeight > 0 {
-		blockStr := formatBlockHeight(daemon.BlockHeight)
-		if daemon.IsOnline && daemon.IsHealthy && daemon.IsSynced {
-			blockStyled = styles.SuccessStyle.Render(blockStr)
-		} else if daemon.IsOnline {
-			blockStyled = styles.WarningStyle.Render(blockStr)
-		} else {
-			blockStyled = styles.MutedStyle.Render(blockStr)
-		}
-	}
+	blockStyled := renderWelcomeHeight(daemon)
 
 	return styles.MutedStyle.Render("Network:") + networkStyled +
 		" " + statusStyled +
 		"   " + styles.MutedStyle.Render("Daemon:") + styles.TextStyle.Render(addressLabel) +
 		"   " + styles.MutedStyle.Render("Height:") + blockStyled
+}
+
+// renderDaemonStateLabel renders an explicit daemon state word: Synced,
+// Syncing X%, Bootstrapping X%, Starting, Online, Unhealthy or Stopped.
+func renderDaemonStateLabel(daemon DaemonStatusInfo) string {
+	if daemon.IsOnline && daemon.IsHealthy {
+		if daemon.IsSynced {
+			return styles.SuccessStyle.Render("● Synced")
+		}
+		if daemon.IsBootstrapping {
+			return styles.BootstrappingStyle.Render("● Bootstrapping " + formatSyncPct(daemon.SyncProgress))
+		}
+		if daemon.IsSyncing {
+			return styles.WarningStyle.Render("● Syncing " + formatSyncPct(daemon.SyncProgress))
+		}
+		if daemon.PeerHeight > 0 || daemon.BlockHeight > 0 {
+			return styles.WarningStyle.Render("● Online")
+		}
+		return styles.WarningStyle.Render("● Starting")
+	}
+	if daemon.IsOnline && !daemon.IsHealthy {
+		return styles.ErrorStyle.Render("● Unhealthy")
+	}
+	return styles.ErrorStyle.Render("○ Stopped")
+}
+
+// renderWelcomeHeight renders the daemon height, including the peer/target
+// height when known so a node catching up from genesis is obvious.
+func renderWelcomeHeight(daemon DaemonStatusInfo) string {
+	if daemon.BlockHeight == 0 {
+		if daemon.PeerHeight > 0 {
+			return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+		}
+		return styles.MutedStyle.Render("-")
+	}
+	blockStr := formatUint64(daemon.BlockHeight)
+
+	if daemon.IsSynced {
+		blockStyled := styles.SuccessStyle.Render(blockStr)
+		if daemon.PeerHeight > 0 {
+			blockStyled += styles.MutedStyle.Render(" / ") + styles.SuccessStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+		}
+		return blockStyled
+	}
+	if daemon.IsOnline {
+		blockStyled := styles.WarningStyle.Render(blockStr)
+		if daemon.PeerHeight > 0 {
+			blockStyled += styles.MutedStyle.Render(" / ") +
+				styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight))) +
+				styles.MutedStyle.Render(" (") +
+				styles.WarningStyle.Render(formatSyncPct(daemon.SyncProgress)) +
+				styles.MutedStyle.Render(")")
+		}
+		return blockStyled
+	}
+	return styles.MutedStyle.Render(blockStr)
 }
 
 // Action returns the selected action
@@ -700,9 +740,10 @@ func (w *WelcomeModel) ResetInput() {
 }
 
 // SetDaemonStatus sets the daemon connection status
-func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isBootstrapping bool, isHealthy bool, network string, address string, blockHeight uint64) {
+func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isBootstrapping bool, isHealthy bool, network string, address string, blockHeight uint64, peerHeight int64, syncProgress float64, isSyncing bool) {
 	w.IsOnline = isOnline
 	w.IsSynced = isSynced
+	w.IsSyncing = isSyncing
 	w.IsBootstrapping = isBootstrapping
 	w.IsHealthy = isHealthy
 	w.Network = network
@@ -711,11 +752,14 @@ func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isBootstrap
 	w.Daemons = []DaemonStatusInfo{{
 		IsOnline:        isOnline,
 		IsSynced:        isSynced,
+		IsSyncing:       isSyncing,
 		IsBootstrapping: isBootstrapping,
 		IsHealthy:       isHealthy,
 		Network:         network,
 		Address:         address,
 		BlockHeight:     blockHeight,
+		PeerHeight:      peerHeight,
+		SyncProgress:    syncProgress,
 	}}
 }
 
@@ -725,6 +769,7 @@ func (w *WelcomeModel) SetDaemonStatuses(daemons []DaemonStatusInfo) {
 	if len(w.Daemons) == 0 {
 		w.IsOnline = false
 		w.IsSynced = false
+		w.IsSyncing = false
 		w.IsBootstrapping = false
 		w.IsHealthy = false
 		w.Network = ""
@@ -735,6 +780,7 @@ func (w *WelcomeModel) SetDaemonStatuses(daemons []DaemonStatusInfo) {
 	primary := w.Daemons[0]
 	w.IsOnline = primary.IsOnline
 	w.IsSynced = primary.IsSynced
+	w.IsSyncing = primary.IsSyncing
 	w.IsBootstrapping = primary.IsBootstrapping
 	w.IsHealthy = primary.IsHealthy
 	w.Network = primary.Network

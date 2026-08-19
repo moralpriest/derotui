@@ -49,24 +49,40 @@ func (m *Model) daemonInstallDownloadCmd(plan installer.Plan) tea.Cmd {
 	}
 }
 
+func installDerodUnit(plan installer.Plan, scope systemdservice.Scope) error {
+	wantedBy := "multi-user.target"
+	if scope == systemdservice.ScopeUser {
+		wantedBy = "default.target"
+	}
+	unitContent := "[Unit]\nDescription=DERO Daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=" + plan.ExecStart + "\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=" + wantedBy + "\n"
+	if err := systemdservice.InstallUnit(scope, plan.UnitTarget, unitContent); err != nil {
+		return err
+	}
+	if err := systemdservice.EnableUnit(scope, "derod.service"); err != nil {
+		return err
+	}
+	return systemdservice.StartUnit(scope, "derod.service")
+}
+
 func (m *Model) daemonInstallApplyCmd(plan installer.Plan) tea.Cmd {
 	return func() tea.Msg {
 		service, _ := detectPreferredDerodService()
 		if service.Exists {
 			return daemonInstallApplyMsg{err: "derod service already exists; manage or reinstall instead"}
 		}
-		unitContent := "[Unit]\nDescription=DERO Daemon\nAfter=network.target\n\n[Service]\nType=simple\nExecStart=" + plan.ExecStart + "\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=multi-user.target\n"
 		scope := systemdservice.ScopeSystem
 		if plan.ServiceScope == "user" {
 			scope = systemdservice.ScopeUser
 		}
-		if err := systemdservice.InstallUnit(scope, plan.UnitTarget, unitContent); err != nil {
-			return daemonInstallApplyMsg{err: err.Error()}
-		}
-		if err := systemdservice.EnableUnit(scope, "derod.service"); err != nil {
-			return daemonInstallApplyMsg{err: err.Error()}
-		}
-		if err := systemdservice.StartUnit(scope, "derod.service"); err != nil {
+		if err := installDerodUnit(plan, scope); err != nil {
+			// A normal user usually can't write to /etc/systemd/system — fall
+			// back to a per-user service instead of failing outright.
+			if scope == systemdservice.ScopeSystem {
+				fallback := installer.WithUserServiceFallback(plan)
+				if err2 := installDerodUnit(fallback, systemdservice.ScopeUser); err2 == nil {
+					return daemonInstallApplyMsg{userService: true}
+				}
+			}
 			return daemonInstallApplyMsg{err: err.Error()}
 		}
 		return daemonInstallApplyMsg{}

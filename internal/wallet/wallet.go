@@ -1540,25 +1540,29 @@ func (w *Wallet) ClearDaemonAddress() {
 
 // DaemonInfo contains daemon information from DERO.GetInfo RPC
 type DaemonInfo struct {
-	Height          uint64
-	StableHeight    int64
-	TopoHeight      int64
-	IsOnline        bool
-	IsSynced        bool
-	IsBootstrapping bool
-	IsHealthy       bool
-	Testnet         bool
-	Network         string
-	Version         string
-	Difficulty      uint64
-	AvgBlockTime    float32
-	IncomingPeers   uint64
-	OutgoingPeers   uint64
-	KnownPeers      uint64
-	Uptime          uint64
-	TxPoolSize      uint64
-	Hashrate1hr     uint64
-	Hashrate1d      uint64
+	Height                uint64
+	StableHeight          int64
+	TopoHeight            int64
+	IsOnline              bool
+	IsSynced              bool
+	IsSyncing             bool
+	IsBootstrapping       bool
+	IsFinalizingBootstrap bool
+	PeerHeight            int64
+	SyncProgress          float64
+	IsHealthy             bool
+	Testnet               bool
+	Network               string
+	Version               string
+	Difficulty            uint64
+	AvgBlockTime          float32
+	IncomingPeers         uint64
+	OutgoingPeers         uint64
+	KnownPeers            uint64
+	Uptime                uint64
+	TxPoolSize            uint64
+	Hashrate1hr           uint64
+	Hashrate1d            uint64
 }
 
 // TxStatus contains daemon-side status for a transaction hash.

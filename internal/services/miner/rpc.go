@@ -33,6 +33,7 @@ type RPCMiner struct {
 	hashrate   uint64
 	blocks     uint64
 	counter    uint64
+	startTime  time.Time
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	wsConn     *websocket.Conn
@@ -85,6 +86,9 @@ func (m *RPCMiner) Start() error {
 	m.counter = 0
 	m.blocks = 0
 	m.hashrate = 0
+	m.mu.Lock()
+	m.startTime = time.Now()
+	m.mu.Unlock()
 
 	// Start websocket connection goroutine
 	m.wg.Add(1)
@@ -137,6 +141,43 @@ func (m *RPCMiner) GetHashrate() uint64 {
 // GetBlocks returns blocks found.
 func (m *RPCMiner) GetBlocks() uint64 {
 	return atomic.LoadUint64(&m.blocks)
+}
+
+// GetMinis reports accepted miniblocks. The legacy miner counts every share
+// it submits as a block and does not separate miniblocks, so this is 0.
+func (m *RPCMiner) GetMinis() uint64 { return 0 }
+
+// GetRejected reports rejected shares. The legacy miner does not track
+// rejections, so this is 0.
+func (m *RPCMiner) GetRejected() uint64 { return 0 }
+
+// GetHeight reports the chain height of the current job. The legacy miner
+// does not track it, so this is 0.
+func (m *RPCMiner) GetHeight() uint64 { return 0 }
+
+// GetDifficulty reports the current job difficulty, when a job is loaded.
+func (m *RPCMiner) GetDifficulty() uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.difficulty == nil {
+		return 0
+	}
+	return m.difficulty.Uint64()
+}
+
+// GetHashes returns the cumulative number of hash computations.
+func (m *RPCMiner) GetHashes() uint64 {
+	return atomic.LoadUint64(&m.counter)
+}
+
+// GetUptime returns how long the current mining session has been running.
+func (m *RPCMiner) GetUptime() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.running.Load() || m.startTime.IsZero() {
+		return 0
+	}
+	return time.Since(m.startTime)
 }
 
 // GetThreads returns configured thread count.

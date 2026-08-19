@@ -28,6 +28,7 @@ type Miner struct {
 	hashrate uint64
 	blocks   uint64
 	counter  uint64
+	started  time.Time
 	cancel   chan struct{}
 }
 
@@ -55,6 +56,7 @@ func (m *Miner) Start(address string, threads int) error {
 	m.counter = 0
 	m.blocks = 0
 	m.hashrate = 0
+	m.started = time.Now()
 	m.mu.Unlock()
 
 	m.running.Store(true)
@@ -90,6 +92,45 @@ func (m *Miner) GetHashrate() uint64 {
 
 func (m *Miner) GetBlocks() uint64 {
 	return atomic.LoadUint64(&m.blocks)
+}
+
+// GetHashes returns the cumulative number of hash computations.
+func (m *Miner) GetHashes() uint64 {
+	return atomic.LoadUint64(&m.counter)
+}
+
+// GetUptime returns how long the current mining session has been running.
+func (m *Miner) GetUptime() time.Duration {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if !m.running.Load() || m.started.IsZero() {
+		return 0
+	}
+	return time.Since(m.started)
+}
+
+// GetHeight returns the current chain height.
+func (m *Miner) GetHeight() uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.chain == nil {
+		return 0
+	}
+	h := m.chain.Get_Height()
+	if h < 0 {
+		return 0
+	}
+	return uint64(h)
+}
+
+// GetDifficulty returns the current chain difficulty.
+func (m *Miner) GetDifficulty() uint64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.chain == nil {
+		return 0
+	}
+	return m.chain.Get_Difficulty()
 }
 
 func (m *Miner) GetThreads() int {

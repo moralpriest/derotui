@@ -356,14 +356,18 @@ func (m *Model) checkDaemonStatus() tea.Cmd {
 					network = "Mainnet"
 				}
 			}
+			info = classifyDaemonSync(info, network, 0)
 			return daemonStatusEntry{
 				isOnline:        info.IsOnline,
 				isSynced:        info.IsSynced,
+				isSyncing:       info.IsSyncing,
 				isBootstrapping: info.IsBootstrapping,
 				isHealthy:       info.IsHealthy,
 				network:         network,
 				address:         address,
 				height:          info.Height,
+				peerHeight:      info.PeerHeight,
+				syncProgress:    info.SyncProgress,
 			}
 		}
 
@@ -589,11 +593,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			welcomeDaemons = append(welcomeDaemons, pages.DaemonStatusInfo{
 				IsOnline:        daemon.isOnline,
 				IsSynced:        daemon.isSynced,
+				IsSyncing:       daemon.isSyncing,
 				IsBootstrapping: daemon.isBootstrapping,
 				IsHealthy:       daemon.isHealthy,
 				Network:         daemon.network,
 				Address:         daemon.address,
 				BlockHeight:     daemon.height,
+				PeerHeight:      daemon.peerHeight,
+				SyncProgress:    daemon.syncProgress,
 			})
 		}
 		m.welcome.SetDaemonStatuses(welcomeDaemons)
@@ -619,7 +626,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != "" {
 			m.daemonStatus.DownloadError = msg.err
 		} else {
-			cmds = append(cmds, m.daemonInstallApplyCmd(msg.plan))
+			// Show the plan and wait for explicit confirmation before touching
+			// the system (systemd unit install is not reversible in the TUI).
+			m.daemonStatus.SetInstallPlan(&msg.plan)
 		}
 
 	case daemonSessionPreviewMsg:
@@ -646,11 +655,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case daemonInstallApplyMsg:
+		m.daemonStatus.ResetInstall()
 		if msg.err != "" {
 			m.daemonStatus.DownloadError = msg.err
+		} else if msg.userService {
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = "Installed derod as a user service (system install not permitted)"
 		} else {
 			m.daemonStatus.DownloadError = ""
-			m.daemonStatus.InstallResult = "Installed systemd unit and reloaded daemon manager"
+			m.daemonStatus.InstallResult = "Installed derod as a system service and started it"
 		}
 
 	case daemonInstallApplySudoMsg:
@@ -689,6 +702,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.miner.SetError(msg.err)
 			m.miner.SetRunning(false)
 			m.miner.SetStatus("")
+		} else if msg.miner != nil {
+			// RPC/engine miner path: the backend is delivered through the
+			// message (a command closure cannot mutate the value-receiver
+			// model). Store it on the live model so stats/stop can reach it.
+			m.rpcMiner = msg.miner
+			m.miner.SetRunning(msg.miner.IsRunning())
+			m.miner.SetAddress(msg.miner.GetAddress())
+			m.miner.SetDaemonHost(msg.miner.GetDaemonHost())
+			if msg.miner.GetThreads() > 0 {
+				m.miner.SetThreads(msg.miner.GetThreads())
+			}
 		} else if m.embeddedDaemon != nil {
 			miner := m.embeddedDaemon.MinerStatus()
 			m.miner.SetRunning(miner.Running)
@@ -700,7 +724,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case minerStatsMsg:
 		m.miner.SetRunning(msg.running)
-		m.miner.SetStats(msg.hashrate, msg.blocks)
+		m.miner.SetStats(msg.hashrate, msg.hashes, msg.minis, msg.blocks, msg.rejected, msg.height, msg.difficulty, msg.uptime)
 		m.miner.SetThreads(msg.threads)
 		m.miner.SetAddress(msg.address)
 		m.miner.SetStatus(msg.status)
@@ -1408,14 +1432,19 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		}
 		if m.daemonStatus.WantSettings() {
 			m.daemonStatus.ResetActions()
-			m.daemonSettings = pages.NewDaemonSettings(config.GetDaemonSettings())
+			m.daemonSettings = pages.NewDaemonSettings(daemonSettingsForSnapshot(config.GetDaemonSettings(), m.daemonStatus.Snapshot))
 			m.page = PageDaemonSettings
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
 		if m.daemonStatus.WantInstall() {
 			m.daemonStatus.ResetActions()
 			if config.GetDaemonSettings().Mode == "embedded" || m.daemonStatus.Snapshot.Source == "Embedded" {
-				m.daemonStatus.DownloadError = "install is only available in external mode"
+				m.daemonStatus.DownloadError = "embedded mode runs derod in-process — press S to start, or switch Mode to external in Config to install a service"
+				m.daemonStatus.Downloading = false
+				break
+			}
+			if m.daemonStatus.Snapshot.Running || m.daemonStatus.Snapshot.Managed || m.daemonStatus.Snapshot.IsOnline {
+				m.daemonStatus.DownloadError = "a daemon is already running; stop it before installing a service"
 				m.daemonStatus.Downloading = false
 				break
 			}
@@ -1423,6 +1452,21 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 			m.daemonStatus.DownloadError = ""
 			m.daemonStatus.InstallResult = ""
 			cmds = append(cmds, m.daemonInstallPreviewCmd())
+		}
+		if m.daemonStatus.WantInstallApply() {
+			m.daemonStatus.ResetActions()
+			m.daemonStatus.Downloading = true
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = ""
+			if m.daemonStatus.InstallPlan != nil {
+				plan := *m.daemonStatus.InstallPlan
+				m.daemonStatus.ResetInstall()
+				cmds = append(cmds, m.daemonInstallApplyCmd(plan))
+			}
+		}
+		if m.daemonStatus.WantInstallDone() {
+			m.daemonStatus.ResetActions()
+			m.daemonStatus.ResetInstall()
 		}
 
 	case PageDaemonLogs:

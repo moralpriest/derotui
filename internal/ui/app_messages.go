@@ -8,6 +8,7 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	daemonservice "github.com/deroproject/dero-wallet-cli/internal/services/daemon"
 	"github.com/deroproject/dero-wallet-cli/internal/services/installer"
+	minerservice "github.com/deroproject/dero-wallet-cli/internal/services/miner"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 )
 
@@ -19,11 +20,14 @@ type tickMsg time.Time
 type daemonStatusEntry struct {
 	isOnline        bool
 	isSynced        bool
+	isSyncing       bool
 	isBootstrapping bool
 	isHealthy       bool
 	network         string
 	address         string
 	height          uint64
+	peerHeight      int64
+	syncProgress    float64
 }
 
 // daemonStatusMsg carries daemon status info.
@@ -125,21 +129,34 @@ type daemonInstallDownloadMsg struct {
 }
 
 type daemonInstallApplyMsg struct {
-	err string
+	err         string
+	userService bool
 }
 
 type daemonInstallApplySudoMsg struct {
 	err string
 }
 
+// minerControlMsg carries the result of a start/stop miner command. The RPC
+// backend is passed through the message (not assigned on the model inside the
+// command closure) because Model.Update is a value receiver: a closure mutating
+// m.rpcMiner would write to a discarded copy and the live model would never
+// see the running miner.
 type minerControlMsg struct {
-	err string
+	err   string
+	miner minerservice.RPCBackend // non-nil when an RPC/engine miner was started or stopped
 }
 
 type minerStatsMsg struct {
 	running    bool
 	hashrate   uint64
 	blocks     uint64
+	minis      uint64
+	rejected   uint64
+	height     uint64
+	difficulty uint64
+	hashes     uint64
+	uptime     time.Duration
 	threads    int
 	address    string
 	status     string
