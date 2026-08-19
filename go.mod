@@ -81,7 +81,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260813143921-898730ea9b95
+replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260817052654-390295b40c0b
 
 replace github.com/civilware/epoch => github.com/moralpriest/epoch v0.0.0-20260812013238-2104b271e52a
 
