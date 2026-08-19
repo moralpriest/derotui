@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
-	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -82,9 +81,8 @@ type DaemonStatusModel struct {
 	wantUninstallApply  bool
 	wantUninstallDone   bool
 	ConfirmingUninstall bool
+	LeavingConfirm      bool
 	cancelled           bool
-	escArmed            bool
-	escArmedAt          time.Time
 	width               int
 	height              int
 }
@@ -108,11 +106,6 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 		d.DownloadError = ""
 		d.InstallResult = ""
 		isEsc := key.Matches(msg, pageEscKeys)
-		// Any non-Esc key disarms the leave-page guard.
-		if !isEsc {
-			d.escArmed = false
-			d.escArmedAt = time.Time{}
-		}
 		// While an install plan is awaiting confirmation, only the confirm
 		// keys apply — regular page keys (start/stop/etc.) must not fire.
 		if d.InstallPlan != nil {
@@ -139,16 +132,22 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 			}
 			return d, nil
 		}
-		// Leaving the page requires two Esc presses within 2s. A lone Escape
+		// Leaving the page requires explicit confirmation: Esc opens a
+		// "Leave daemon page?" prompt and only Y confirms. A stray Escape
 		// arriving from the terminal (e.g. a fragmented escape sequence) can
-		// otherwise kick the user back to welcome with no input at all.
+		// never navigate away on its own — it just opens (or closes) the prompt.
 		if isEsc {
-			now := time.Now()
-			if d.escArmed && now.Sub(d.escArmedAt) < 2*time.Second {
+			d.LeavingConfirm = !d.LeavingConfirm
+			return d, nil
+		}
+		// While the leave prompt is up, only Y/N apply — regular page keys
+		// must not fire.
+		if d.LeavingConfirm {
+			switch {
+			case msg.String() == "y" || msg.String() == "Y":
 				d.cancelled = true
-			} else {
-				d.escArmed = true
-				d.escArmedAt = now
+			default:
+				d.LeavingConfirm = false
 			}
 			return d, nil
 		}
@@ -273,6 +272,15 @@ func (d DaemonStatusModel) View() string {
 		rows = append(rows, d.renderUninstallConfirm()...)
 	}
 
+	if d.LeavingConfirm && !d.Downloading {
+		rows = append(rows, "", sectionHeader("Leave daemon page", styles.ColorAccent))
+		rows = append(rows,
+			styles.MutedStyle.Render("  Go back to the welcome screen?"),
+			"",
+			styles.WarningStyle.Render("  [Y] Leave \u2022 [N]/Esc Cancel"),
+		)
+	}
+
 	rows = append(rows, "", d.renderFooter())
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -373,11 +381,10 @@ func (d DaemonStatusModel) renderFooter() string {
 	if !d.Downloading && resettable && !d.ConfirmingUninstall && d.InstallPlan == nil {
 		parts = append(parts, k("U")+" "+m("Reset"))
 	}
-	if d.escArmed {
-		parts = append(parts, k("C")+" "+m("Config"), styles.WarningStyle.Render("Esc again to leave"))
-	} else {
-		parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
+	if d.LeavingConfirm {
+		return styles.WarningStyle.Render("  [Y] Leave \u2022 [N]/Esc Cancel")
 	}
+	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
 
 	return strings.Join(parts, sep)
 }
@@ -620,7 +627,6 @@ func (d *DaemonStatusModel) ResetActions() {
 	d.wantUninstall = false
 	d.wantUninstallApply = false
 	d.wantUninstallDone = false
+	d.LeavingConfirm = false
 	d.cancelled = false
-	d.escArmed = false
-	d.escArmedAt = time.Time{}
 }

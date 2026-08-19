@@ -1408,6 +1408,10 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		m.daemonStatus, cmd = m.daemonStatus.Update(msg)
 		cmds = append(cmds, cmd)
 		if m.daemonStatus.Cancelled() {
+			// Diagnostic: record what message triggered the leave so a stray
+			// input that bypasses the Y/N prompt can be traced (visible in the
+			// F12 debug console / debug log).
+			derolog.Info("daemon", "page.leave", "Leaving daemon page", "trigger", fmt.Sprintf("%T", msg))
 			m.daemonStatus.ResetActions()
 			m.page = PageWelcome
 			cmds = append(cmds, m.setWindowTitleCmd())

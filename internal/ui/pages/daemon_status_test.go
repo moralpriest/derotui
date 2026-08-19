@@ -234,70 +234,88 @@ func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
 	}
 }
 
-// A single Esc must not navigate away — it only arms the leave-page guard.
-// A second Esc within 2s leaves, and any other key disarms. This prevents a
-// stray Escape arriving from the terminal (e.g. a fragmented escape sequence)
-// from kicking the user back to welcome with no input.
-func TestDaemonStatusEscArmsThenLeaves(t *testing.T) {
+// A single Esc must not navigate away — it only opens the leave prompt. Only
+// an explicit Y confirms. This makes it impossible for a stray Escape arriving
+// from the terminal (e.g. a fragmented escape sequence) to kick the user back
+// to welcome with no input.
+func TestDaemonStatusEscOpensLeavePrompt(t *testing.T) {
 	d := NewDaemonStatus()
 
-	// First Esc arms the guard but must NOT navigate away.
+	// Esc opens the prompt but must NOT navigate away.
 	next, _ := d.Update(planPreviewKeys("esc"))
 	if next.Cancelled() {
-		t.Fatal("single esc must not navigate away")
+		t.Fatal("esc must not navigate away on its own")
 	}
-	if !next.escArmed {
-		t.Fatal("first esc should arm the leave guard")
+	if !next.LeavingConfirm {
+		t.Fatal("esc should open the leave prompt")
 	}
 
-	// Second Esc within the window leaves.
-	next, _ = next.Update(planPreviewKeys("esc"))
+	// Y confirms leaving.
+	next, _ = next.Update(planPreviewKeys("y"))
 	if !next.Cancelled() {
-		t.Fatal("second esc should navigate away")
+		t.Fatal("y on the leave prompt should navigate away")
 	}
 }
 
-// After any other key, the leave guard is disarmed and Esc must be pressed
-// twice again — so a stray Esc can never combine with a later one.
-func TestDaemonStatusEscDisarmedByOtherKey(t *testing.T) {
+// A stray Esc followed by anything other than Y must not leave, and the
+// prompt is dismissed. A later Esc re-opens it.
+func TestDaemonStatusLeavePromptRequiresY(t *testing.T) {
 	d := NewDaemonStatus()
 
-	// Arm the guard.
-	next, _ := d.Update(planPreviewKeys("esc"))
-	if next.escArmed != true {
-		t.Fatal("expected esc to arm the guard")
+	next, _ := d.Update(planPreviewKeys("esc")) // open prompt
+	if !next.LeavingConfirm {
+		t.Fatal("expected leave prompt open")
 	}
 
-	// Any other key disarms.
+	// N dismisses without leaving.
+	next, _ = next.Update(planPreviewKeys("n"))
+	if next.Cancelled() {
+		t.Fatal("n must not navigate away")
+	}
+	if next.LeavingConfirm {
+		t.Fatal("n should dismiss the leave prompt")
+	}
+
+	// Any other key while the prompt is up also dismisses it (no action).
+	next, _ = next.Update(planPreviewKeys("esc"))
+	if !next.LeavingConfirm {
+		t.Fatal("expected leave prompt open again")
+	}
 	next, _ = next.Update(planPreviewKeys("s"))
-	if !next.WantStart() {
-		t.Fatal("non-esc key should still work")
-	}
-	if next.escArmed {
-		t.Fatal("non-esc key must disarm the guard")
+	if next.Cancelled() || next.LeavingConfirm || next.WantStart() {
+		t.Fatal("page keys must not fire while the leave prompt is up")
 	}
 
-	// Esc again only arms; a further Esc leaves.
-	next.ResetActions()
+	// Esc toggles the prompt: open, then closed, then open again; Y leaves.
 	next, _ = next.Update(planPreviewKeys("esc"))
-	if next.Cancelled() {
-		t.Fatal("esc after an intervening key must not navigate away on the first press")
+	if !next.LeavingConfirm {
+		t.Fatal("esc should open the leave prompt")
 	}
 	next, _ = next.Update(planPreviewKeys("esc"))
+	if next.LeavingConfirm {
+		t.Fatal("esc should close the leave prompt")
+	}
+	next, _ = next.Update(planPreviewKeys("esc"))
+	if !next.LeavingConfirm {
+		t.Fatal("esc should re-open the leave prompt")
+	}
+	next, _ = next.Update(planPreviewKeys("y"))
 	if !next.Cancelled() {
-		t.Fatal("second esc after an intervening key should navigate away")
+		t.Fatal("y on the re-opened prompt should navigate away")
 	}
 }
 
-// The footer shows a clear hint once the leave guard is armed.
-func TestDaemonStatusFooterShowsEscAgainHint(t *testing.T) {
+// The page renders the leave prompt and the footer shows the confirm keys.
+func TestDaemonStatusRendersLeavePrompt(t *testing.T) {
 	d := NewDaemonStatus()
 	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Embedded"})
 
 	next, _ := d.Update(planPreviewKeys("esc"))
 	view := stripANSI(next.View())
-	if !strings.Contains(view, "Esc again to leave") {
-		t.Fatalf("expected an 'Esc again to leave' hint, got:\n%s", view)
+	for _, want := range []string{"Leave daemon page", "[Y] Leave", "[N]/Esc Cancel"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("leave prompt view missing %q", want)
+		}
 	}
 }
 
