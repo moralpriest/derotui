@@ -425,6 +425,15 @@ func (m *Model) checkDaemonStatus() tea.Cmd {
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Diagnostic: record every keypress while on a daemon page so an
+	// unexpected back-out can be traced from ~/.derotui/diag.log alone.
+	switch m.page {
+	case PageDaemonStatus, PageDaemonLogs, PageDaemonSettings:
+		if kp, ok := msg.(tea.KeyPressMsg); ok {
+			diagLog("key page=%d key=%q", m.page, kp.String())
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1194,7 +1203,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	result, cmd := m.dispatchPage(msg, cmds)
 	if result.page != before {
 		// Diagnostic: every page transition is logged so an unexpected jump
-		// back to welcome can be traced in the F12 debug console.
+		// back to welcome can be traced in the F12 debug console and the file.
+		diagLog("transition %d -> %d trigger=%T", before, result.page, msg)
 		derolog.Info("ui", "page.transition", fmt.Sprintf("Page %d -> %d", before, result.page),
 			"trigger", fmt.Sprintf("%T", msg), "page", fmt.Sprintf("%d", result.page))
 	}
