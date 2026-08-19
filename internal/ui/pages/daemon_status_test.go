@@ -335,3 +335,28 @@ func TestDaemonStatusFooterHidesResetDuringDownloadAndInstall(t *testing.T) {
 		t.Fatal("Reset must not show while an install plan is pending")
 	}
 }
+
+// Single-letter action keys are ignored right after the page appears, so a
+// stray terminal byte (the trailing 'c' of a device attributes response) can't
+// jump to Config or trigger Start/Stop/Install/Reset.
+func TestDaemonStatusSettleIgnoresActionKeys(t *testing.T) {
+	d := NewDaemonStatus()
+	d.ArmSettle()
+
+	next, _ := d.Update(planPreviewKeys("c"))
+	if next.WantSettings() {
+		t.Fatal("c must be ignored while settling")
+	}
+	if next, _ := next.Update(planPreviewKeys("s")); next.WantStart() {
+		t.Fatal("s must be ignored while settling")
+	}
+	if next, _ := next.Update(planPreviewKeys("u")); next.WantUninstall() {
+		t.Fatal("u must be ignored while settling")
+	}
+
+	// Esc (leave toggle) and the Y/N confirm keys must still work while settling.
+	n, _ := next.Update(planPreviewKeys("esc"))
+	if !n.LeavingConfirm {
+		t.Fatal("esc should still open the leave prompt while settling")
+	}
+}

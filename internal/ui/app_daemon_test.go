@@ -326,3 +326,24 @@ func TestTailFileLinesReturnsLastNonEmpty(t *testing.T) {
 		t.Fatalf("expected nil for missing file, got %v", got)
 	}
 }
+
+// TestWalletDaemonRetryDoesNotForceDashboard verifies a failed background
+// daemon reconnection (the periodic offline auto-retry) does not yank the user
+// back to the dashboard. This was the "backs out by itself" bug: the retry
+// loop fires every few seconds while offline and used to set m.page=PageMain.
+func TestWalletDaemonRetryDoesNotForceDashboard(t *testing.T) {
+	m := NewModel()
+	// Wallet open but offline, user navigated into a sub-page.
+	m.page = PageSend
+	m.daemonRetryAfter = initialDaemonRetryInterval
+
+	result, _ := m.Update(walletDaemonConnectedMsg{connected: false, err: "connection refused"})
+	got := result.(Model)
+
+	if got.page != PageSend {
+		t.Fatalf("failed daemon retry navigated away from PageSend: got page %v", got.page)
+	}
+	if got.dashboard.IsConnecting {
+		t.Fatal("connecting indicator should be cleared after a failed retry")
+	}
+}

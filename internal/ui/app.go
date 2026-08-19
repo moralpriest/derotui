@@ -1059,15 +1059,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.daemonRetryAfter = maxDaemonRetryInterval
 				}
 			}
-			// Daemon connection failed - keep wallet OPEN and show dashboard offline
-			// User can use /connect to retry or continue offline
+			// Daemon connection failed - keep wallet OPEN and show offline.
+			// Do NOT force-navigate back to the dashboard: this handler also
+			// runs on the periodic auto-retry loop (every few seconds while
+			// offline), so a page assignment here yanks the user off whatever
+			// page they're on (send, history, seed, settings...) and is the
+			// "backs out by itself" bug. The dashboard is already the landing
+			// page when the initial connect fails; retries only refresh its
+			// offline state and leave the current page alone.
 			m.dashboard.SetFlashMessage(msg.err+" - Wallet opened offline. Use /connect to retry.", false)
 			m.dashboard.SetConnecting(false)
 			// Update wallet info to show offline status
 			cmds = append(cmds, m.updateWalletInfo())
-			// Stay on dashboard (don't close wallet or go back to welcome)
-			m.page = PageMain
-			cmds = append(cmds, m.setWindowTitleCmd())
 		}
 
 	case networkRequiredMsg:

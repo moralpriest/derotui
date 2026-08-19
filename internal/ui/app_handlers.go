@@ -124,6 +124,8 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 
 	case pages.ActionDaemon:
 		m.page = PageDaemonStatus
+		m.daemonStatus.ArmSettle()
+		diagLog("enter daemon page (ActionDaemon)")
 		return tea.Batch(m.daemonManagerStatusCmd(), m.setWindowTitleCmd())
 
 	case pages.ActionMiner:

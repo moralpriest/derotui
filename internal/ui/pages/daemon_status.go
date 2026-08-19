@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -83,15 +84,32 @@ type DaemonStatusModel struct {
 	ConfirmingUninstall bool
 	LeavingConfirm      bool
 	cancelled           bool
-	width               int
-	height              int
+	// settleUntil, when in the future, suppresses single-letter action keys
+	// (start/stop/config/install/reset/...). The terminal can deliver a stray
+	// byte right after the page appears (e.g. the trailing 'c' of a device
+	// attributes response), which would otherwise trigger an action or jump to
+	// another page. Esc and the Y/N confirm keys remain active.
+	settleUntil time.Time
+	width       int
+	height      int
 }
 
 const daemonStatusContentWidth = 70
 const daemonStatusLabelWidth = 12
 
+// daemonStatusSettleWindow is how long single-letter action keys are ignored
+// after the daemon status page appears. This absorbs a stray byte that the
+// terminal emits right after navigation without blocking deliberate use.
+const daemonStatusSettleWindow = 5 * time.Second
+
 func NewDaemonStatus() DaemonStatusModel  { return DaemonStatusModel{} }
 func (d DaemonStatusModel) Init() tea.Cmd { return nil }
+
+// ArmSettle suppresses single-letter action keys until daemonStatusSettleWindow
+// has elapsed. Call it whenever the page is entered from another page.
+func (d *DaemonStatusModel) ArmSettle() {
+	d.settleUntil = time.Now().Add(daemonStatusSettleWindow)
+}
 
 func padLabelText(label string) string {
 	for len(label) < daemonStatusLabelWidth {
@@ -149,6 +167,10 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 			default:
 				d.LeavingConfirm = false
 			}
+			return d, nil
+		}
+		// Ignore single-letter action keys while settling (see settleUntil).
+		if time.Now().Before(d.settleUntil) {
 			return d, nil
 		}
 		switch {
