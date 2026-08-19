@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	derodpkg "github.com/civilware/derodpkg/cmd"
+	derodpkg "github.com/moralpriest/derodpkg/cmd"
 	"github.com/deroproject/derohe/blockchain"
 	deroconfig "github.com/deroproject/derohe/config"
 	"github.com/deroproject/derohe/globals"

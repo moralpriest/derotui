@@ -9,11 +9,11 @@ require (
 	charm.land/bubbletea/v2 v2.0.8
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/atotto/clipboard v0.1.4
-	github.com/civilware/derodpkg v0.0.0-00010101000000-000000000000
 	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/creachadair/jrpc2 v0.36.0
 	github.com/deroproject/derohe v0.0.0-20240405032004-bd300c0e086e
 	github.com/gorilla/websocket v1.5.3
+	github.com/moralpriest/derodpkg v0.0.0-20260819044301-254e364b31c0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go-miner v0.0.0-00010101000000-000000000000
 	golang.org/x/sys v0.47.0
@@ -84,8 +84,6 @@ require (
 replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260817052654-390295b40c0b
 
 replace github.com/civilware/epoch => github.com/moralpriest/epoch v0.0.0-20260812013238-2104b271e52a
-
-replace github.com/civilware/derodpkg => github.com/moralpriest/derodpkg v0.0.0-20260421204848-b0b2a0af70d7
 
 replace github.com/creachadair/jrpc2 => github.com/creachadair/jrpc2 v0.35.4
 
