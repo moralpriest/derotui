@@ -137,6 +137,12 @@ type daemonInstallApplySudoMsg struct {
 	err string
 }
 
+// daemonUninstallMsg carries the result of a derod service uninstall.
+type daemonUninstallMsg struct {
+	err     string
+	removed string // comma-separated list of removed components
+}
+
 // minerControlMsg carries the result of a start/stop miner command. The RPC
 // backend is passed through the message (not assigned on the model inside the
 // command closure) because Model.Update is a value receiver: a closure mutating

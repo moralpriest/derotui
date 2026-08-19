@@ -3,6 +3,10 @@
 package ui
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
+
 	tea "charm.land/bubbletea/v2"
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"github.com/deroproject/dero-wallet-cli/internal/services/installer"
@@ -107,4 +111,75 @@ func (m *Model) daemonInstallApplySudoCmd(plan installer.Plan) tea.Cmd {
 		}
 		return daemonInstallApplySudoMsg{}
 	}
+}
+
+// daemonUninstallCmd removes an installed derod systemd service (user or
+// system scope) and the TUI-downloaded binary, returning the app to the
+// pre-install state. Config and chain data are deliberately kept.
+func (m *Model) daemonUninstallCmd() tea.Cmd {
+	return func() tea.Msg {
+		result, err := systemdservice.DetectAll("derod")
+		if err != nil {
+			return daemonUninstallMsg{err: err.Error()}
+		}
+		if !result.User.Exists && !result.System.Exists {
+			return daemonUninstallMsg{err: "no derod service found to uninstall"}
+		}
+
+		var removed []string
+		if result.User.Exists {
+			if err := systemdservice.RemoveUnit(systemdservice.ScopeUser, result.User.Unit, result.User.FragmentPath); err != nil {
+				return daemonUninstallMsg{err: "user service: " + err.Error()}
+			}
+			removed = append(removed, "user service")
+		}
+		if result.System.Exists {
+			if err := systemdservice.RemoveUnit(systemdservice.ScopeSystem, result.System.Unit, result.System.FragmentPath); err != nil {
+				// systemctl needs root for system-scope units; a normal user can't
+				// remove /etc/systemd/system/derod.service. Don't prompt sudo from
+				// inside the TUI — hand back the exact commands instead.
+				return daemonUninstallMsg{err: "system service: " + err.Error() + ". Run manually: sudo systemctl stop derod && sudo systemctl disable derod && sudo rm " + result.System.FragmentPath + " && sudo systemctl daemon-reload"}
+			}
+			removed = append(removed, "system service")
+		}
+
+		// Remove the TUI-downloaded binary so a later install starts clean.
+		// Only the default derotui-managed path is ever deleted — a custom
+		// BinaryPath (e.g. a system derod package) is left untouched.
+		binary := defaultDerodBinaryPath()
+		if binary != "" {
+			if err := os.Remove(binary); err == nil {
+				removed = append(removed, "binary")
+			} else if !os.IsNotExist(err) {
+				removed = append(removed, "binary ("+err.Error()+")")
+			}
+		}
+
+		return daemonUninstallMsg{removed: strings.Join(removed, ", ")}
+	}
+}
+
+// defaultDerodBinaryPath returns the binary path derotui manages, or "" when
+// the user configured a custom path that must not be deleted.
+func defaultDerodBinaryPath() string {
+	settings := config.GetDaemonSettings()
+	binary := strings.TrimSpace(settings.BinaryPath)
+	if binary == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			binary = filepath.Join(home, ".derotui", "derod")
+		}
+	}
+	if binary == "" {
+		return ""
+	}
+	// Only treat binary paths inside the derotui config dir as managed.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	managedDir := filepath.Join(home, ".derotui")
+	if !strings.HasPrefix(filepath.Clean(binary), filepath.Clean(managedDir)) {
+		return ""
+	}
+	return binary
 }

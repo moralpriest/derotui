@@ -16,12 +16,13 @@ import (
 )
 
 var (
-	daemonStartKeys   = key.NewBinding(key.WithKeys("s"))
-	daemonStopKeys    = key.NewBinding(key.WithKeys("x"))
-	daemonRestartKeys = key.NewBinding(key.WithKeys("r"))
-	daemonLogsKeys    = key.NewBinding(key.WithKeys("l"))
-	daemonInstallKeys = key.NewBinding(key.WithKeys("i"))
-	daemonConfigKeys  = key.NewBinding(key.WithKeys("c"))
+	daemonStartKeys     = key.NewBinding(key.WithKeys("s"))
+	daemonStopKeys      = key.NewBinding(key.WithKeys("x"))
+	daemonRestartKeys   = key.NewBinding(key.WithKeys("r"))
+	daemonLogsKeys      = key.NewBinding(key.WithKeys("l"))
+	daemonInstallKeys   = key.NewBinding(key.WithKeys("i"))
+	daemonConfigKeys    = key.NewBinding(key.WithKeys("c"))
+	daemonUninstallKeys = key.NewBinding(key.WithKeys("u"))
 )
 
 type DaemonStatusSnapshot struct {
@@ -63,22 +64,26 @@ type DaemonStatusSnapshot struct {
 }
 
 type DaemonStatusModel struct {
-	Snapshot         DaemonStatusSnapshot
-	Downloading      bool
-	DownloadError    string
-	InstallResult    string
-	InstallPlan      *installer.Plan
-	wantStart        bool
-	wantStop         bool
-	wantRestart      bool
-	wantLogs         bool
-	wantSettings     bool
-	wantInstall      bool
-	wantInstallApply bool
-	wantInstallDone  bool
-	cancelled        bool
-	width            int
-	height           int
+	Snapshot            DaemonStatusSnapshot
+	Downloading         bool
+	DownloadError       string
+	InstallResult       string
+	InstallPlan         *installer.Plan
+	wantStart           bool
+	wantStop            bool
+	wantRestart         bool
+	wantLogs            bool
+	wantSettings        bool
+	wantInstall         bool
+	wantInstallApply    bool
+	wantInstallDone     bool
+	wantUninstall       bool
+	wantUninstallApply  bool
+	wantUninstallDone   bool
+	ConfirmingUninstall bool
+	cancelled           bool
+	width               int
+	height              int
 }
 
 const daemonStatusContentWidth = 70
@@ -112,6 +117,19 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 			}
 			return d, nil
 		}
+		// While an uninstall is awaiting confirmation, only the confirm keys
+		// apply — regular page keys must not fire.
+		if d.ConfirmingUninstall {
+			switch {
+			case msg.String() == "y" || msg.String() == "Y":
+				d.wantUninstallApply = true
+			case msg.String() == "n" || msg.String() == "N":
+				d.wantUninstallDone = true
+			case key.Matches(msg, pageEscKeys):
+				d.wantUninstallDone = true
+			}
+			return d, nil
+		}
 		switch {
 		case key.Matches(msg, pageEscKeys):
 			d.cancelled = true
@@ -127,6 +145,8 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 			d.wantInstall = true
 		case key.Matches(msg, daemonConfigKeys):
 			d.wantSettings = true
+		case key.Matches(msg, daemonUninstallKeys):
+			d.wantUninstall = true
 		}
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
@@ -228,6 +248,11 @@ func (d DaemonStatusModel) View() string {
 		rows = append(rows, d.renderInstallPlan()...)
 	}
 
+	if d.ConfirmingUninstall && !d.Downloading {
+		rows = append(rows, "", sectionHeader("Uninstall derod", styles.ColorAccent))
+		rows = append(rows, d.renderUninstallConfirm()...)
+	}
+
 	rows = append(rows, "", d.renderFooter())
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -271,6 +296,18 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 	return rows
 }
 
+// renderUninstallConfirm explains what uninstalling removes and asks for
+// confirmation before any system-level changes are made.
+func (d DaemonStatusModel) renderUninstallConfirm() []string {
+	rows := []string{
+		styles.MutedStyle.Render("  Stops and removes the derod systemd service and the"),
+		styles.MutedStyle.Render("  downloaded binary. Config and chain data are kept."),
+		"",
+		styles.WarningStyle.Render("  [Y] Uninstall \u2022 [N]/Esc Cancel"),
+	}
+	return rows
+}
+
 func (d DaemonStatusModel) renderFooter() string {
 	k := styles.AccentStyle.Render
 	m := styles.MutedStyle.Render
@@ -278,6 +315,7 @@ func (d DaemonStatusModel) renderFooter() string {
 
 	parts := []string{}
 	isEmbedded := strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded")
+	isSystemDaemon := strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "System Daemon")
 
 	if !d.Downloading && !d.Snapshot.Running && !d.Snapshot.Managed {
 		label := "Start"
@@ -299,6 +337,13 @@ func (d DaemonStatusModel) renderFooter() string {
 	// second node on the same ports.
 	if !isEmbedded && !d.Snapshot.Running && !d.Snapshot.Managed {
 		parts = append(parts, k("I")+" "+m("Install"))
+	}
+
+	// Uninstall is offered whenever a derod service exists (System Daemon
+	// source), whether running or stopped — it stops the unit as part of
+	// removal.
+	if isSystemDaemon && !d.ConfirmingUninstall && d.InstallPlan == nil {
+		parts = append(parts, k("U")+" "+m("Uninstall"))
 	}
 	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
 
@@ -516,12 +561,20 @@ func (d DaemonStatusModel) WantSettings() bool                         { return 
 func (d DaemonStatusModel) WantInstall() bool                          { return d.wantInstall }
 func (d DaemonStatusModel) WantInstallApply() bool                     { return d.wantInstallApply }
 func (d DaemonStatusModel) WantInstallDone() bool                      { return d.wantInstallDone }
+func (d DaemonStatusModel) WantUninstall() bool                        { return d.wantUninstall }
+func (d DaemonStatusModel) WantUninstallApply() bool                   { return d.wantUninstallApply }
+func (d DaemonStatusModel) WantUninstallDone() bool                    { return d.wantUninstallDone }
 func (d DaemonStatusModel) Cancelled() bool                            { return d.cancelled }
 func (d *DaemonStatusModel) SetInstallPlan(plan *installer.Plan)       { d.InstallPlan = plan }
 func (d *DaemonStatusModel) ResetInstall() {
 	d.InstallPlan = nil
 	d.wantInstallApply = false
 	d.wantInstallDone = false
+}
+func (d *DaemonStatusModel) ResetUninstall() {
+	d.ConfirmingUninstall = false
+	d.wantUninstallApply = false
+	d.wantUninstallDone = false
 }
 func (d *DaemonStatusModel) ResetActions() {
 	d.wantStart = false
@@ -532,5 +585,8 @@ func (d *DaemonStatusModel) ResetActions() {
 	d.wantInstall = false
 	d.wantInstallApply = false
 	d.wantInstallDone = false
+	d.wantUninstall = false
+	d.wantUninstallApply = false
+	d.wantUninstallDone = false
 	d.cancelled = false
 }

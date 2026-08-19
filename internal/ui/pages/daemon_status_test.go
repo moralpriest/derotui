@@ -132,3 +132,90 @@ func TestDaemonStatusFooterShowsInstallWhenPlanned(t *testing.T) {
 		t.Fatal("expected Install in footer for an unconfigured daemon")
 	}
 }
+
+// While an uninstall is awaiting confirmation, Y must request apply and the
+// normal page keys (start/stop/install...) must be inert.
+func TestDaemonStatusUninstallConfirmBlocksPageKeys(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Source: "System Daemon"})
+	d.ConfirmingUninstall = true
+
+	// A normal page key (x = stop) must not fire while the confirm is up.
+	next, _ := d.Update(planPreviewKeys("x"))
+	if next.WantStop() || next.WantInstall() || next.WantUninstall() {
+		t.Fatal("page keys must be blocked while an uninstall confirm is pending")
+	}
+	if !next.ConfirmingUninstall {
+		t.Fatal("confirm should still be pending after unrelated key")
+	}
+
+	// Y confirms the uninstall.
+	next, _ = next.Update(planPreviewKeys("y"))
+	if !next.WantUninstallApply() {
+		t.Fatal("expected WantUninstallApply after y")
+	}
+	if next.WantUninstallDone() {
+		t.Fatal("y must not also set done")
+	}
+
+	// N cancels.
+	next.ResetActions()
+	next, _ = next.Update(planPreviewKeys("n"))
+	if !next.WantUninstallDone() {
+		t.Fatal("expected WantUninstallDone after n")
+	}
+	if next.WantUninstallApply() {
+		t.Fatal("n must not set apply")
+	}
+}
+
+// Esc cancels a pending uninstall confirm without leaving the page.
+func TestDaemonStatusUninstallConfirmEscCancels(t *testing.T) {
+	d := NewDaemonStatus()
+	d.ConfirmingUninstall = true
+
+	next, _ := d.Update(planPreviewKeys("esc"))
+	if !next.WantUninstallDone() {
+		t.Fatal("expected WantUninstallDone after esc")
+	}
+	if next.Cancelled() {
+		t.Fatal("esc on an uninstall confirm must not navigate away")
+	}
+}
+
+// The uninstall confirm renders its explanation and prompt.
+func TestDaemonStatusRendersUninstallConfirm(t *testing.T) {
+	d := NewDaemonStatus()
+	d.ConfirmingUninstall = true
+
+	view := d.View()
+	for _, want := range []string{"Uninstall derod", "[Y] Uninstall", "Config and chain data are kept"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("uninstall confirm view missing %q", want)
+		}
+	}
+}
+
+// Uninstall is shown in the footer when a derod systemd service exists, and
+// hidden when the daemon is external/managed instead.
+func TestDaemonStatusFooterShowsUninstallForSystemDaemon(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Running: true, Source: "System Daemon"})
+
+	view := stripANSI(d.View())
+	if !strings.Contains(view, "U Uninstall") {
+		t.Fatal("expected Uninstall in footer for a system daemon")
+	}
+}
+
+func TestDaemonStatusFooterHidesUninstallForOtherSources(t *testing.T) {
+	for _, source := range []string{"External Local", "Managed Local", "Planned Local", "Embedded"} {
+		d := NewDaemonStatus()
+		d.SetSnapshot(DaemonStatusSnapshot{Running: true, Source: source})
+
+		view := stripANSI(d.View())
+		if strings.Contains(view, "U Uninstall") {
+			t.Errorf("Uninstall must not show for source %q", source)
+		}
+	}
+}

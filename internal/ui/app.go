@@ -674,6 +674,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonStatus.InstallResult = "Installed systemd unit with sudo and reloaded daemon manager"
 		}
 
+	case daemonUninstallMsg:
+		m.daemonStatus.ResetUninstall()
+		if msg.err != "" {
+			m.daemonStatus.DownloadError = msg.err
+		} else {
+			m.daemonStatus.DownloadError = ""
+			m.daemonStatus.InstallResult = "Uninstalled " + msg.removed
+			cmds = append(cmds, m.daemonTickCmd())
+		}
+
 	case daemonConnectMsg:
 		if msg.err != nil {
 			m.daemon.SetError("Failed to connect: " + msg.err.Error())
@@ -1467,6 +1477,19 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		if m.daemonStatus.WantInstallDone() {
 			m.daemonStatus.ResetActions()
 			m.daemonStatus.ResetInstall()
+		}
+		if m.daemonStatus.WantUninstall() {
+			m.daemonStatus.ResetActions()
+			m.daemonStatus.ConfirmingUninstall = true
+		}
+		if m.daemonStatus.WantUninstallApply() {
+			m.daemonStatus.ResetActions()
+			m.daemonStatus.ResetUninstall()
+			cmds = append(cmds, m.daemonUninstallCmd())
+		}
+		if m.daemonStatus.WantUninstallDone() {
+			m.daemonStatus.ResetActions()
+			m.daemonStatus.ResetUninstall()
 		}
 
 	case PageDaemonLogs:

@@ -40,6 +40,37 @@ func StartUnitWithSudo(unit string) error {
 	return runSystemctl(ScopeSystem, true, "start", unit)
 }
 
+// RemoveUnit stops, disables and deletes a unit file, then reloads systemd so
+// the removal is visible to later status checks. Stop/disable failures are
+// tolerated (the unit may already be stopped or not enabled).
+func RemoveUnit(scope Scope, unit, unitPath string) error {
+	return removeUnit(scope, unit, unitPath, false)
+}
+
+// RemoveUnitWithSudo removes a system unit using sudo explicitly.
+func RemoveUnitWithSudo(unit, unitPath string) error {
+	return removeUnit(ScopeSystem, unit, unitPath, true)
+}
+
+func removeUnit(scope Scope, unit, unitPath string, useSudo bool) error {
+	_ = runSystemctl(scope, useSudo, "stop", unit)
+	_ = runSystemctl(scope, useSudo, "disable", unit)
+	if useSudo {
+		rmCmd := exec.Command("sudo", "rm", "-f", unitPath)
+		out, err := rmCmd.CombinedOutput()
+		if err != nil {
+			msg := strings.TrimSpace(string(out))
+			if msg == "" {
+				msg = err.Error()
+			}
+			return fmt.Errorf("%s", msg)
+		}
+	} else if err := os.Remove(unitPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return runSystemctl(scope, useSudo, "daemon-reload")
+}
+
 func installUnit(scope Scope, unitPath, unitContent string, useSudo bool) error {
 	if scope != ScopeSystem && scope != ScopeUser {
 		return fmt.Errorf("unsupported install scope")
