@@ -11,7 +11,7 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/creachadair/jrpc2 v0.36.0
-	github.com/deroproject/derohe v0.0.0-20240405032004-bd300c0e086e
+	github.com/deroproject/derohe v0.0.0-20260527071132-5cd042e8f541
 	github.com/gorilla/websocket v1.5.3
 	github.com/moralpriest/derodpkg v0.0.0-20260819044301-254e364b31c0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -92,3 +92,5 @@ replace github.com/lesismal/nbio => github.com/lesismal/nbio v1.2.20
 replace github.com/lesismal/llib => github.com/lesismal/llib v1.1.6
 
 replace go-miner => ../Dirtybird-Go-Miner
+
+replace github.com/civilware/tela => github.com/moralpriest/tela v0.0.0-20260811235101-8ee693d0cfd5
