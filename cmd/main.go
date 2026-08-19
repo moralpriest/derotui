@@ -35,7 +35,8 @@ var (
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "daemon-helper" {
-		if err := daemonservice.RunHelper(); err != nil {
+		serviceMode := len(os.Args) > 2 && os.Args[2] == "--service"
+		if err := daemonservice.RunHelper(serviceMode); err != nil {
 			fmt.Printf("daemon-helper error: %v\n", err)
 			os.Exit(1)
 		}

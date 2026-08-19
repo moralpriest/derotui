@@ -15,13 +15,12 @@ import (
 )
 
 func (m *Model) daemonInstallPreviewCmd() tea.Cmd {
+	// Install now registers the built-in daemon as a background service — no
+	// external derod download needed. The same daemon that runs in embedded
+	// mode becomes a systemd user service.
 	settings := config.GetDaemonSettings()
 	return func() tea.Msg {
-		match, err := releases.DiscoverOfficialDerod(settings.DownloadSource)
-		if err != nil {
-			return daemonInstallPreviewMsg{err: err.Error()}
-		}
-		plan, err := installer.BuildPlan(settings, match)
+		plan, err := installer.BuildBuiltinServicePlan(settings)
 		if err != nil {
 			return daemonInstallPreviewMsg{err: err.Error()}
 		}

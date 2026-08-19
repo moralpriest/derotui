@@ -122,6 +122,18 @@ func TestDaemonStatusFooterHidesInstallWhenRunning(t *testing.T) {
 	}
 }
 
+// Install is offered for the embedded helper too, since it now registers the
+// built-in daemon as a background service rather than downloading a binary.
+func TestDaemonStatusFooterShowsInstallForEmbedded(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Embedded"})
+
+	view := stripANSI(d.View())
+	if !strings.Contains(view, "I Install") {
+		t.Fatal("expected Install in footer for an embedded daemon")
+	}
+}
+
 // Install is offered when nothing is configured or running.
 func TestDaemonStatusFooterShowsInstallWhenPlanned(t *testing.T) {
 	d := NewDaemonStatus()

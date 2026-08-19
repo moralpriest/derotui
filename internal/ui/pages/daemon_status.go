@@ -273,12 +273,14 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 	}
 	rows := []string{
 		val("Type:", plan.ServiceType),
-		val("Release:", strings.TrimSpace(plan.ReleaseTag)),
 		val("Binary:", plan.BinaryTarget),
 		val("Data:", plan.DataDir),
 		val("RPC:", plan.RPCBind),
 		val("P2P:", plan.P2PBind),
 		val("GetWork:", plan.GetWorkBind),
+	}
+	if strings.TrimSpace(plan.ReleaseTag) != "" {
+		rows = append(rows, val("Release:", plan.ReleaseTag))
 	}
 	if strings.TrimSpace(plan.NodeTag) != "" {
 		rows = append(rows, val("Node Tag:", plan.NodeTag))
@@ -333,10 +335,11 @@ func (d DaemonStatusModel) renderFooter() string {
 		parts = append(parts, k("L")+" "+m("Logs"))
 	}
 
-	// Install only makes sense when nothing is configured/running yet —
-	// installing a systemd unit while a daemon is up would start a conflicting
+	// Install registers the built-in daemon as a background service, so it
+	// applies to embedded mode too. It only makes sense when nothing is
+	// running yet — installing while a daemon is up would start a conflicting
 	// second node on the same ports.
-	if !isEmbedded && !d.Snapshot.Running && !d.Snapshot.Managed {
+	if !d.Snapshot.Running && !d.Snapshot.Managed {
 		parts = append(parts, k("I")+" "+m("Install"))
 	}
 

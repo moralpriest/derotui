@@ -34,7 +34,11 @@ type helperState struct {
 	running  bool
 }
 
-func RunHelper() error {
+// RunHelper runs the daemon helper process. When serviceMode is true, the
+// daemon is started immediately from the saved settings (used when the helper
+// runs as an installed systemd service) instead of waiting for a start
+// command on the socket.
+func RunHelper(serviceMode bool) error {
 	sockPath := helperSocketPath()
 	_ = os.Remove(sockPath)
 	if err := os.MkdirAll(filepath.Dir(sockPath), 0700); err != nil {
@@ -52,6 +56,12 @@ func RunHelper() error {
 	_ = os.Chmod(sockPath, 0600)
 
 	state := &helperState{logBuf: NewLogBuffer(1000)}
+	if serviceMode {
+		settings := appconfig.GetDaemonSettings()
+		if err := state.start(settings); err != nil {
+			return fmt.Errorf("service auto-start failed: %w", err)
+		}
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {

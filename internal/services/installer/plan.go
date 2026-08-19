@@ -96,6 +96,41 @@ func BuildPlan(settings config.DaemonSettings, match releases.Match) (Plan, erro
 	}, nil
 }
 
+// BuildBuiltinServicePlan builds a plan that registers the built-in daemon
+// (derotui daemon-helper --service) as a systemd user service. No external
+// derod binary is downloaded — the daemon is the same one embedded in the
+// TUI, running as a background service.
+func BuildBuiltinServicePlan(settings config.DaemonSettings) (Plan, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return Plan{}, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Plan{}, err
+	}
+	unitTarget := filepath.Join(home, ".config", "systemd", "user", "derod.service")
+	execStart := fmt.Sprintf("%s daemon-helper --service", exe)
+	return Plan{
+		Mode:              "service",
+		ServiceType:       "User Service (built-in daemon)",
+		ServiceScope:      "user",
+		FallbackNote:      "Runs the same daemon embedded in derotui as a background service. No download needed.",
+		BinaryTarget:      exe,
+		BinaryReady:       true,
+		UnitTarget:        unitTarget,
+		ExecStart:         execStart,
+		Network:           settings.Network,
+		DataDir:           settings.DataDir,
+		RPCBind:           settings.RPCBind,
+		P2PBind:           settings.P2PBind,
+		GetWorkBind:       settings.GetWorkBind,
+		NodeTag:           settings.NodeTag,
+		IntegratorAddress: settings.IntegratorAddress,
+		StartNow:          true,
+	}, nil
+}
+
 // BuildSessionPlan builds a preview-only session start plan.
 func BuildSessionPlan(settings config.DaemonSettings, match releases.Match) (Plan, error) {
 	plan, err := BuildPlan(settings, match)

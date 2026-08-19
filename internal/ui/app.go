@@ -660,10 +660,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonStatus.DownloadError = msg.err
 		} else if msg.userService {
 			m.daemonStatus.DownloadError = ""
-			m.daemonStatus.InstallResult = "Installed derod as a user service (system install not permitted)"
+			m.daemonStatus.InstallResult = "Installed the built-in daemon as a user service"
 		} else {
 			m.daemonStatus.DownloadError = ""
-			m.daemonStatus.InstallResult = "Installed derod as a system service and started it"
+			m.daemonStatus.InstallResult = "Installed the built-in daemon as a service and started it"
 		}
 
 	case daemonInstallApplySudoMsg:
@@ -1448,11 +1448,8 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		}
 		if m.daemonStatus.WantInstall() {
 			m.daemonStatus.ResetActions()
-			if config.GetDaemonSettings().Mode == "embedded" || m.daemonStatus.Snapshot.Source == "Embedded" {
-				m.daemonStatus.DownloadError = "embedded mode runs derod in-process — press S to start, or switch Mode to external in Config to install a service"
-				m.daemonStatus.Downloading = false
-				break
-			}
+			// Install registers the built-in daemon as a background service, so
+			// it applies to embedded mode too — no external binary involved.
 			if m.daemonStatus.Snapshot.Running || m.daemonStatus.Snapshot.Managed || m.daemonStatus.Snapshot.IsOnline {
 				m.daemonStatus.DownloadError = "a daemon is already running; stop it before installing a service"
 				m.daemonStatus.Downloading = false

@@ -401,6 +401,18 @@ func (m *Model) startLocalDaemonCmd() tea.Cmd {
 			return daemonManagerMsg{err: fmt.Sprintf("daemon network %s does not match app network %s; open Settings or switch network and start", settings.Network, currentNetwork)}
 		}
 
+		// If a derod service is installed, prefer starting it via systemd over
+		// spawning the embedded helper — the service owns the ports, and the
+		// helper's startup cleanup would otherwise kill the running service.
+		wallet.InvalidateDaemonInfoCache(settings.RPCBind)
+		service, _ := detectPreferredDerodService()
+		if service.Exists {
+			if err := systemdservice.Control(service.Scope, service.Unit, "start"); err != nil {
+				return daemonManagerMsg{err: formatSystemdError(err)}
+			}
+			return m.daemonManagerStatusCmd()()
+		}
+
 		if settings.Mode == "embedded" || settings.Mode == "" {
 			if err := m.embeddedDaemon.Start(settings); err != nil {
 				return daemonManagerMsg{err: err.Error()}
@@ -415,15 +427,6 @@ func (m *Model) startLocalDaemonCmd() tea.Cmd {
 				Network: statusSnapshot.Network,
 			}
 			return daemonManagerMsg{snapshot: snap, logs: logs, info: info, source: "Embedded"}
-		}
-
-		wallet.InvalidateDaemonInfoCache(settings.RPCBind)
-		service, _ := detectPreferredDerodService()
-		if service.Exists {
-			if err := systemdservice.Control(service.Scope, service.Unit, "start"); err != nil {
-				return daemonManagerMsg{err: formatSystemdError(err)}
-			}
-			return m.daemonManagerStatusCmd()()
 		}
 		if strings.TrimSpace(settings.BinaryPath) == "" {
 			return daemonManagerMsg{err: "daemon binary path is not configured"}
