@@ -1190,7 +1190,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Route to current page
-	return m.dispatchPage(msg, cmds)
+	before := m.page
+	result, cmd := m.dispatchPage(msg, cmds)
+	if result.page != before {
+		// Diagnostic: every page transition is logged so an unexpected jump
+		// back to welcome can be traced in the F12 debug console.
+		derolog.Info("ui", "page.transition", fmt.Sprintf("Page %d -> %d", before, result.page),
+			"trigger", fmt.Sprintf("%T", msg), "page", fmt.Sprintf("%d", result.page))
+	}
+	return result, cmd
 }
 
 // shutdownSession cleans up XSWD state and closes the wallet. When quitting is
