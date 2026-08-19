@@ -101,7 +101,7 @@ func TestDaemonStatusRendersInstallPlan(t *testing.T) {
 	})
 
 	view := d.View()
-	for _, want := range []string{"Install derod", "System Service (Recommended)", "/home/u/.derotui/derod", "127.0.0.1:10102", "[Y] Install"} {
+	for _, want := range []string{"Install as Service", "System Service (Recommended)", "/home/u/.derotui/derod", "127.0.0.1:10102", "[Y] Install Service"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("install plan view missing %q", want)
 		}
@@ -129,8 +129,8 @@ func TestDaemonStatusFooterShowsInstallForEmbedded(t *testing.T) {
 	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Embedded"})
 
 	view := stripANSI(d.View())
-	if !strings.Contains(view, "I Install") {
-		t.Fatal("expected Install in footer for an embedded daemon")
+	if !strings.Contains(view, "I Install Service") {
+		t.Fatal("expected Install Service in footer for an embedded daemon")
 	}
 }
 
@@ -140,8 +140,8 @@ func TestDaemonStatusFooterShowsInstallWhenPlanned(t *testing.T) {
 	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Planned Local"})
 
 	view := stripANSI(d.View())
-	if !strings.Contains(view, "I Install") {
-		t.Fatal("expected Install in footer for an unconfigured daemon")
+	if !strings.Contains(view, "I Install Service") {
+		t.Fatal("expected Install Service in footer for an unconfigured daemon")
 	}
 }
 
@@ -231,6 +231,36 @@ func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
 		if has != tc.shown {
 			t.Errorf("source %q: expected Reset shown=%v, got %v", tc.source, tc.shown, has)
 		}
+	}
+}
+
+// A second Esc within the debounce window is swallowed so a stray/repeated
+// Esc (or Esc right after dismissing a confirm) can't navigate away.
+func TestDaemonStatusEscDebounced(t *testing.T) {
+	d := NewDaemonStatus()
+
+	// First Esc registers.
+	next, _ := d.Update(planPreviewKeys("esc"))
+	if !next.Cancelled() {
+		t.Fatal("first esc should navigate away")
+	}
+
+	// A second Esc immediately after is swallowed (no state change).
+	next.ResetActions()
+	next, _ = next.Update(planPreviewKeys("esc"))
+	if next.Cancelled() {
+		t.Fatal("rapid second esc must be swallowed by the debounce")
+	}
+
+	// After any other key, the guard resets and Esc works again.
+	next, _ = next.Update(planPreviewKeys("s"))
+	if !next.WantStart() {
+		t.Fatal("non-esc key should still work and reset the guard")
+	}
+	next.ResetActions()
+	next, _ = next.Update(planPreviewKeys("esc"))
+	if !next.Cancelled() {
+		t.Fatal("esc after an intervening key should navigate away again")
 	}
 }
 

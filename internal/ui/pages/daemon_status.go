@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
@@ -82,6 +83,7 @@ type DaemonStatusModel struct {
 	wantUninstallDone   bool
 	ConfirmingUninstall bool
 	cancelled           bool
+	lastEscAt           time.Time
 	width               int
 	height              int
 }
@@ -104,6 +106,20 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		d.DownloadError = ""
 		d.InstallResult = ""
+		// Debounce Esc: a stray or repeated Esc (key repeat, or Esc right
+		// after dismissing a confirm screen) must not bounce the user out of
+		// the daemon page unexpectedly. Only a deliberate second Esc — after
+		// the debounce window — navigates back. Any other key resets the guard.
+		isEsc := key.Matches(msg, pageEscKeys)
+		if isEsc {
+			now := time.Now()
+			if !d.lastEscAt.IsZero() && now.Sub(d.lastEscAt) < 300*time.Millisecond {
+				return d, nil
+			}
+			d.lastEscAt = now
+		} else {
+			d.lastEscAt = time.Time{}
+		}
 		// While an install plan is awaiting confirmation, only the confirm
 		// keys apply — regular page keys (start/stop/etc.) must not fire.
 		if d.InstallPlan != nil {
@@ -244,7 +260,7 @@ func (d DaemonStatusModel) View() string {
 	}
 
 	if d.InstallPlan != nil && !d.Downloading {
-		rows = append(rows, "", sectionHeader("Install derod", styles.ColorAccent))
+		rows = append(rows, "", sectionHeader("Install as Service", styles.ColorAccent))
 		rows = append(rows, d.renderInstallPlan()...)
 	}
 
@@ -294,7 +310,7 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 	if strings.TrimSpace(plan.FallbackNote) != "" {
 		rows = append(rows, "", styles.MutedStyle.Render("  "+plan.FallbackNote))
 	}
-	rows = append(rows, "", styles.WarningStyle.Render("  [Y] Install \u2022 [N]/Esc Cancel"))
+	rows = append(rows, "", styles.WarningStyle.Render("  [Y] Install Service \u2022 [N]/Esc Cancel"))
 	return rows
 }
 
@@ -340,7 +356,7 @@ func (d DaemonStatusModel) renderFooter() string {
 	// running yet — installing while a daemon is up would start a conflicting
 	// second node on the same ports.
 	if !d.Snapshot.Running && !d.Snapshot.Managed {
-		parts = append(parts, k("I")+" "+m("Install"))
+		parts = append(parts, k("I")+" "+m("Install Service"))
 	}
 
 	// Reset is offered for any daemon we own or installed: the embedded
