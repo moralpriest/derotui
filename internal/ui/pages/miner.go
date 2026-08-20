@@ -156,8 +156,27 @@ func (m MinerModel) Update(msg tea.Msg) (MinerModel, tea.Cmd) {
 }
 
 func (m MinerModel) View() string {
+	deroLogo := styles.Logo()
+	axeArtStr := ` /\_[]_/\
+              |] _||_ [|
+       ___     \/ || \/
+      /___\       ||
+     (|0 0|)      ||
+   __/{\U/}\_ ___/vvv
+  / \  {~}   / _|_P|
+  | /\  ~   /_/   []
+  |_| (____)
+  \_]/______\
+     _\_||_/_`
+	axeArt := lipgloss.NewStyle().Foreground(styles.ColorAccent).Render(axeArtStr)
+	headerArt := lipgloss.JoinHorizontal(lipgloss.Center, deroLogo, "   ", axeArt)
+	if lipgloss.Width(headerArt) > 70 {
+		headerArt = lipgloss.JoinVertical(lipgloss.Center, deroLogo, "", axeArt)
+	}
+	headerArt = lipgloss.NewStyle().PaddingTop(1).Render(headerArt)
 	title := styles.TitleStyle.Render("Miner")
 	rows := []string{
+		headerArt,
 		title,
 		"",
 		styles.MutedStyle.Render("Status: ") + m.renderStatus(),
@@ -198,7 +217,7 @@ func (m MinerModel) View() string {
 		w = styles.Width + 4
 	}
 	if h == 0 {
-		h = 24
+		h = 32
 	}
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }
