@@ -10,15 +10,24 @@ import (
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/deroproject/dero-wallet-cli/internal/config"
+	"github.com/deroproject/dero-wallet-cli/internal/ui/components"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
+	"github.com/deroproject/derohe/rpc"
 )
 
 var (
-	minerStartKeys      = key.NewBinding(key.WithKeys("s"))
-	minerStopKeys       = key.NewBinding(key.WithKeys("x"))
-	minerThreadUpKeys   = key.NewBinding(key.WithKeys("right", "+", "="))
-	minerThreadDownKeys = key.NewBinding(key.WithKeys("left", "-"))
+	minerStartKeys         = key.NewBinding(key.WithKeys("s"))
+	minerStopKeys          = key.NewBinding(key.WithKeys("x"))
+	minerThreadUpKeys      = key.NewBinding(key.WithKeys("right", "+", "="))
+	minerThreadDownKeys    = key.NewBinding(key.WithKeys("left", "-"))
+	minerAddressEditKeys   = key.NewBinding(key.WithKeys("a", "e"))
+	minerAddressSaveKeys   = key.NewBinding(key.WithKeys("enter"))
+	minerAddressCancelKeys = key.NewBinding(key.WithKeys("esc"))
 )
+
+type SpinnerTickMsg struct{}
 
 type MinerModel struct {
 	Running     bool
@@ -41,6 +50,11 @@ type MinerModel struct {
 	wantStop    bool
 	width       int
 	height      int
+
+	editingAddress bool
+	addressInput   components.InputModel
+	addressError   string
+	spinnerFrame   int
 }
 
 func NewMiner() MinerModel {
@@ -48,17 +62,56 @@ func NewMiner() MinerModel {
 	if maxThreads < 1 {
 		maxThreads = 1
 	}
+	defaultThreads := maxThreads - 2
+	if defaultThreads < 1 {
+		defaultThreads = 1
+	}
+	input := components.NewInput("Address", "dero1... mining address", false)
 	return MinerModel{
-		Threads:    maxThreads,
-		MaxThreads: maxThreads,
+		Threads:      defaultThreads,
+		MaxThreads:   maxThreads,
+		addressInput: input,
 	}
 }
 
 func (m MinerModel) Init() tea.Cmd { return nil }
 
+func (m *MinerModel) IsEditingAddress() bool { return m.editingAddress }
+
+func (m *MinerModel) AddressError() string { return m.addressError }
+
 func (m MinerModel) Update(msg tea.Msg) (MinerModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		// If editing address, delegate to input and handle save/cancel
+		if m.editingAddress {
+			switch {
+			case key.Matches(msg, minerAddressSaveKeys):
+				addr := strings.TrimSpace(m.addressInput.Value())
+				if err := m.ValidateAddress(addr); err != nil {
+					m.addressError = err.Error()
+					return m, nil
+				}
+				m.Address = addr
+				m.addressInput.SetValue(addr)
+				m.addressInput.Blur()
+				m.editingAddress = false
+				m.addressError = ""
+				_ = config.SetLastMiningAddress(addr)
+				m.Status = "Address saved"
+				return m, nil
+			case key.Matches(msg, minerAddressCancelKeys):
+				m.addressInput.SetValue(m.Address)
+				m.addressInput.Blur()
+				m.editingAddress = false
+				m.addressError = ""
+				return m, nil
+			}
+			var cmd tea.Cmd
+			m.addressInput, cmd = m.addressInput.Update(msg)
+			m.addressError = ""
+			return m, cmd
+		}
 		m.lastError = ""
 		switch {
 		case key.Matches(msg, pageEscKeys):
@@ -79,35 +132,54 @@ func (m MinerModel) Update(msg tea.Msg) (MinerModel, tea.Cmd) {
 			if !m.Running && m.Threads < m.MaxThreads {
 				m.Threads++
 			}
+		case key.Matches(msg, minerAddressEditKeys):
+			if !m.Running {
+				m.editingAddress = true
+				m.addressInput.SetValue(m.Address)
+				m.addressError = ""
+				return m, m.addressInput.Focus()
+			}
+		}
+	case SpinnerTickMsg:
+		if m.Running && !m.wantStop {
+			m.spinnerFrame = (m.spinnerFrame + 1) % 10
+			return m, tea.Tick(time.Millisecond*180, func(t time.Time) tea.Msg { return SpinnerTickMsg{} })
 		}
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 	}
+	if m.Running && !m.wantStop && !m.editingAddress {
+		return m, tea.Tick(time.Millisecond*180, func(t time.Time) tea.Msg { return SpinnerTickMsg{} })
+	}
 	return m, nil
 }
 
 func (m MinerModel) View() string {
+	title := styles.TitleStyle.Render("Miner")
 	rows := []string{
-		styles.TitleStyle.Render("Miner"),
+		title,
 		"",
 		styles.MutedStyle.Render("Status: ") + m.renderStatus(),
-		styles.MutedStyle.Render("Address: ") + m.renderAddress(),
-		styles.MutedStyle.Render("Threads: ") + styles.TextStyle.Render(fmt.Sprintf("%d/%d", m.Threads, m.MaxThreads)),
-		styles.MutedStyle.Render("Hashrate: ") + styles.TextStyle.Render(formatMinerHashrate(m.Hashrate)),
+		styles.MutedStyle.Render("Threads: ") + styles.AccentStyle.Render(fmt.Sprintf("%d/%d", m.Threads, m.MaxThreads)),
+		styles.MutedStyle.Render("Hashrate: ") + m.hashrateStyled(),
 		styles.MutedStyle.Render("Total Hashes: ") + styles.TextStyle.Render(formatUint64(m.Hashes)),
-		styles.MutedStyle.Render("Minis: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Minis)),
-		styles.MutedStyle.Render("Blocks: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.BlocksFound)),
-		styles.MutedStyle.Render("Rejected: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Rejected)),
+		styles.MutedStyle.Render("Minis: ") + m.minisStyled(),
+		styles.MutedStyle.Render("Blocks: ") + m.blocksStyled(),
+		styles.MutedStyle.Render("Rejected: ") + m.rejectedStyled(),
 		styles.MutedStyle.Render("Height: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Height)),
 		styles.MutedStyle.Render("Difficulty: ") + styles.TextStyle.Render(formatMinerDifficulty(m.Difficulty)),
 		styles.MutedStyle.Render("Uptime: ") + styles.TextStyle.Render(formatMinerUptime(m.Uptime)),
 	}
 
-	if m.DaemonHost != "" {
-		rows = append(rows, styles.MutedStyle.Render("Daemon: ")+styles.TextStyle.Render(m.DaemonHost))
+	if m.editingAddress {
+		rows = append(rows, m.addressInput.View())
+		if m.addressError != "" {
+			rows = append(rows, styles.ErrorStyle.Render("✗ "+m.addressError))
+		}
+	} else {
+		rows = append(rows, styles.MutedStyle.Render("Address: ")+m.renderAddress())
 	}
-
 	if m.Status != "" {
 		rows = append(rows, "", styles.MutedStyle.Render(m.Status))
 	}
@@ -116,7 +188,19 @@ func (m MinerModel) View() string {
 	}
 
 	rows = append(rows, "", styles.MutedStyle.Render(m.renderFooter()))
-	return styles.ThemedBoxStyle().Width(styles.Width).Padding(2, 4).Render(strings.Join(rows, "\n"))
+	boxStyle := styles.ThemedBoxStyle().Width(styles.Width).Padding(2, 4)
+	if m.Running {
+		boxStyle = boxStyle.BorderForeground(styles.ColorSuccess)
+	}
+	content := boxStyle.Render(strings.Join(rows, "\n"))
+	w, h := m.width, m.height
+	if w == 0 {
+		w = styles.Width + 4
+	}
+	if h == 0 {
+		h = 24
+	}
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m *MinerModel) SetRunning(running bool) {
@@ -138,7 +222,30 @@ func (m *MinerModel) SetStats(hashrate, hashes, minis, blocks, rejected, height,
 }
 
 func (m *MinerModel) SetAddress(address string) {
-	m.Address = address
+	m.Address = strings.TrimSpace(address)
+	if !m.editingAddress {
+		m.addressInput.SetValue(m.Address)
+		m.addressError = ""
+	}
+}
+
+func (m *MinerModel) SetEditingAddress(editing bool) {
+	m.editingAddress = editing
+	if editing {
+		m.addressInput.SetValue(m.Address)
+		m.addressError = ""
+	}
+}
+
+func (m *MinerModel) ValidateAddress(addr string) error {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return fmt.Errorf("address required")
+	}
+	if _, err := rpc.NewAddress(addr); err != nil {
+		return fmt.Errorf("invalid address: %w", err)
+	}
+	return nil
 }
 
 func (m *MinerModel) SetThreads(threads int) {
@@ -163,9 +270,10 @@ func (m *MinerModel) SetError(err string) {
 	m.lastError = err
 }
 
-func (m MinerModel) Cancelled() bool { return m.cancelled }
-func (m MinerModel) WantStart() bool { return m.wantStart }
-func (m MinerModel) WantStop() bool  { return m.wantStop }
+func (m MinerModel) Cancelled() bool      { return m.cancelled }
+func (m MinerModel) WantStart() bool      { return m.wantStart }
+func (m MinerModel) WantStop() bool       { return m.wantStop }
+func (m MinerModel) GetSpinnerFrame() int { return m.spinnerFrame }
 
 func (m *MinerModel) ResetActions() {
 	m.cancelled = false
@@ -175,7 +283,8 @@ func (m *MinerModel) ResetActions() {
 
 func (m MinerModel) renderStatus() string {
 	if m.Running {
-		return styles.SuccessStyle.Render("Mining")
+		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[m.spinnerFrame%10]
+		return styles.SuccessStyle.Render(spinner + " Mining")
 	}
 	return styles.WarningStyle.Render("Stopped")
 }
@@ -190,12 +299,14 @@ func (m MinerModel) renderAddress() string {
 func (m MinerModel) renderFooter() string {
 	k := styles.AccentStyle.Render
 	mute := styles.MutedStyle.Render
-	sep := mute(" • ")
+	sep := " • "
 	parts := []string{}
-	if m.Running {
+	if m.editingAddress {
+		parts = append(parts, k("Enter")+" "+mute("Save"), k("Esc")+" "+mute("Cancel"))
+	} else if m.Running {
 		parts = append(parts, k("X")+" "+mute("Stop"))
 	} else {
-		parts = append(parts, k("S")+" "+mute("Start"), k("←/→")+" "+mute("Threads"))
+		parts = append(parts, k("S")+" "+mute("Start"), k("←/→")+" "+mute("Threads"), k("A")+" "+mute("Edit Address"))
 	}
 	parts = append(parts, k("/")+" "+mute("Commands"), k("Esc")+" "+mute("Back"))
 	return strings.Join(parts, sep)
@@ -237,4 +348,36 @@ func formatMinerDifficulty(n uint64) string {
 	default:
 		return fmt.Sprintf("%d", n)
 	}
+}
+
+func (m MinerModel) hashrateStyled() string {
+	s := formatMinerHashrate(m.Hashrate)
+	if m.Hashrate == 0 {
+		return styles.MutedStyle.Render(s)
+	}
+	return styles.SuccessStyle.Render(s)
+}
+
+func (m MinerModel) rejectedStyled() string {
+	s := fmt.Sprintf("%d", m.Rejected)
+	if m.Rejected > 0 {
+		return styles.ErrorStyle.Render(s)
+	}
+	return styles.MutedStyle.Render(s)
+}
+
+func (m MinerModel) blocksStyled() string {
+	s := fmt.Sprintf("%d", m.BlocksFound)
+	if m.BlocksFound > 0 {
+		return styles.SuccessStyle.Render(s)
+	}
+	return styles.MutedStyle.Render(s)
+}
+
+func (m MinerModel) minisStyled() string {
+	s := fmt.Sprintf("%d", m.Minis)
+	if m.Minis > 0 {
+		return styles.SuccessStyle.Render(s)
+	}
+	return styles.MutedStyle.Render(s)
 }

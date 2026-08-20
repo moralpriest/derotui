@@ -741,6 +741,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.miner.SetAddress(miner.Address)
 		}
+		if m.miner.Running {
+			return m, tea.Tick(time.Millisecond*180, func(t time.Time) tea.Msg { return pages.SpinnerTickMsg{} })
+		}
 
 	case minerStatsMsg:
 		m.miner.SetRunning(msg.running)
@@ -749,6 +752,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.miner.SetAddress(msg.address)
 		m.miner.SetStatus(msg.status)
 		m.miner.SetDaemonHost(msg.daemonHost)
+		if msg.running {
+			return m, tea.Tick(time.Millisecond*180, func(t time.Time) tea.Msg { return pages.SpinnerTickMsg{} })
+		}
 
 	case startupCheckMsg:
 		// If we have a last wallet, check network first
