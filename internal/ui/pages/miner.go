@@ -173,9 +173,10 @@ func (m MinerModel) View() string {
 	if lipgloss.Width(headerArt) > 70 {
 		headerArt = lipgloss.JoinVertical(lipgloss.Center, deroLogo, "", axeArt)
 	}
-	headerArt = lipgloss.NewStyle().PaddingTop(1).Render(headerArt)
+	headerArt = lipgloss.NewStyle().PaddingTop(2).Render(headerArt)
 	title := styles.TitleStyle.Render("Miner")
 	rows := []string{
+		"",
 		headerArt,
 		title,
 		"",
@@ -217,7 +218,10 @@ func (m MinerModel) View() string {
 		w = styles.Width + 4
 	}
 	if h == 0 {
-		h = 32
+		h = 40
+	}
+	if h < 36 {
+		h = 36
 	}
 	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
 }
