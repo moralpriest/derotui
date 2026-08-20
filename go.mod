@@ -6,7 +6,7 @@ toolchain go1.26.0
 
 require (
 	charm.land/bubbles/v2 v2.1.1
-	charm.land/bubbletea/v2 v2.0.8
+	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.6
 	github.com/atotto/clipboard v0.1.4
 	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
