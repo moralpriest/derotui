@@ -28,12 +28,13 @@ const (
 
 // DaemonModel represents the daemon connection page
 type DaemonModel struct {
-	input     components.InputModel
-	network   DaemonNetwork
-	confirmed bool
-	cancelled bool
-	error     string
-	address   string
+	input      components.InputModel
+	network    DaemonNetwork
+	confirmed  bool
+	cancelled  bool
+	connecting bool
+	error      string
+	address    string
 }
 
 // NewDaemon creates a new daemon connection page
@@ -69,6 +70,15 @@ func (d DaemonModel) Update(msg tea.Msg) (DaemonModel, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		// Allow cancel even while connecting
+		if d.connecting {
+			if key.Matches(msg, pageEscKeys) {
+				d.connecting = false
+				d.cancelled = true
+				return d, nil
+			}
+			return d, nil
+		}
 		// Handle escape first
 		if key.Matches(msg, pageEscKeys) {
 			d.cancelled = true
@@ -138,8 +148,13 @@ func (d DaemonModel) View() string {
 		d.networkOption(DaemonNetworkSimulator, "Simulator", styles.SimulatorStyle, "20000"),
 	)
 
-	// Input
-	inputView := d.input.View()
+	// Input or connecting indicator
+	var inputView string
+	if d.connecting {
+		inputView = styles.WarningStyle.Render("⟳ Connecting to " + d.address + "...")
+	} else {
+		inputView = d.input.View()
+	}
 
 	// Error - constrain width to fit in box
 	var errorView string
@@ -152,6 +167,9 @@ func (d DaemonModel) View() string {
 
 	// Help
 	help := "←/→/Tab • Shift+Tab Network • Enter Connect • Esc Cancel"
+	if d.connecting {
+		help = "Esc Cancel"
+	}
 	helpStyled := styles.MutedStyle.Render(help)
 
 	// Compose
@@ -197,6 +215,7 @@ func (d DaemonModel) Cancelled() bool {
 func (d *DaemonModel) SetError(err string) {
 	d.error = err
 	d.confirmed = false
+	d.connecting = false
 }
 
 // Reset resets the daemon page
@@ -205,6 +224,7 @@ func (d *DaemonModel) Reset() {
 	d.setPlaceholderForNetwork()
 	d.confirmed = false
 	d.cancelled = false
+	d.connecting = false
 	d.error = ""
 	d.address = ""
 	d.input.Focus()
@@ -213,6 +233,16 @@ func (d *DaemonModel) Reset() {
 // ResetConfirmed resets only the confirmed flag (used when connection is in progress)
 func (d *DaemonModel) ResetConfirmed() {
 	d.confirmed = false
+}
+
+// SetConnecting sets the connecting state
+func (d *DaemonModel) SetConnecting(connecting bool) {
+	d.connecting = connecting
+}
+
+// IsConnecting returns whether a connection is in progress
+func (d DaemonModel) IsConnecting() bool {
+	return d.connecting
 }
 
 // HandleMouse handles mouse events on the daemon connection page

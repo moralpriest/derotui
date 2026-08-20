@@ -694,6 +694,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case daemonConnectMsg:
+		m.daemon.SetConnecting(false)
 		if msg.err != nil {
 			m.daemon.SetError("Failed to connect: " + msg.err.Error())
 		} else {

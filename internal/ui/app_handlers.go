@@ -407,6 +407,7 @@ func (m *Model) handleDaemonAction() tea.Cmd {
 
 		// Reset confirmed flag to prevent repeated connection attempts
 		m.daemon.ResetConfirmed()
+		m.daemon.SetConnecting(true)
 
 		// Return a command to connect asynchronously
 		return m.connectToDaemon(address)

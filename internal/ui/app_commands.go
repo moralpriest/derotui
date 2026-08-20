@@ -38,6 +38,11 @@ func (m *Model) connectToDaemon(address string) tea.Cmd {
 			return daemonConnectMsg{address: address, err: err}
 		}
 
+		// Invalidate any stale negative cache for explicit /connect so a
+		// cold public node (dero.geeko.cloud) doesn't fail first try and
+		// succeed second due to 3s DaemonInfoCacheTTL.
+		wallet.InvalidateDaemonInfoCache(normalizedAddress)
+
 		// Query daemon info to detect network type
 		info := wallet.GetDaemonInfo(context.Background(), normalizedAddress)
 		if !info.IsHealthy {
