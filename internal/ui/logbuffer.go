@@ -238,27 +238,29 @@ func (lw *LogWriter) Write(p []byte) (n int, err error) {
 
 // IsHighSignal returns true if this log entry is important enough to show in the debug panel
 func IsHighSignal(entry log.LogEntry) bool {
-	// Always show errors and warnings
 	if entry.Level >= log.LevelWarn {
 		return true
 	}
-
-	// Show important lifecycle events
-	if entry.Event != "" && entry.Event != "log" {
-		// Skip noisy polling events
+	// Daemon lifecycle + helper stdout always belong in the debug console.
+	if strings.EqualFold(entry.Component, "daemon") {
 		if strings.Contains(entry.Event, "poll") ||
 			strings.Contains(entry.Event, "tick") ||
-			strings.Contains(entry.Event, "sync") {
+			strings.Contains(entry.Event, "refresh") {
 			return false
 		}
 		return true
 	}
-
-	// Skip raw legacy logs that weren't structured
+	if entry.Event != "" && entry.Event != "log" {
+		if strings.Contains(entry.Event, "poll") ||
+			strings.Contains(entry.Event, "tick") ||
+			strings.Contains(entry.Event, "refresh") {
+			return false
+		}
+		return true
+	}
 	if entry.Component == "legacy" || entry.Component == "unknown" {
 		return false
 	}
-
 	return false
 }
 

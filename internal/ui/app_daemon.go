@@ -391,6 +391,7 @@ func (m *Model) daemonManagerStatusCmd() tea.Cmd {
 func (m *Model) startLocalDaemonCmd() tea.Cmd {
 	settings := config.GetDaemonSettings()
 	return func() tea.Msg {
+		derolog.Info("daemon", "start", "starting local daemon", "network", settings.Network, "mode", settings.Mode)
 		currentNetwork := string(config.NetworkMainnet)
 		if m.Opts.Simulator {
 			currentNetwork = string(config.NetworkSimulator)
@@ -440,6 +441,7 @@ func (m *Model) startLocalDaemonCmd() tea.Cmd {
 
 func (m *Model) stopLocalDaemonCmd() tea.Cmd {
 	return func() tea.Msg {
+		derolog.Info("daemon", "stop", "stopping local daemon")
 		settings := config.GetDaemonSettings()
 
 		if m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() {

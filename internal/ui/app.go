@@ -570,6 +570,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
+		if m.debugEnabled {
+			m.updateDashboardLogEntries()
+		}
 		cmds = append(cmds, m.daemonTickCmd())
 		cmds = append(cmds, m.minerStatsCmd())
 		// Update wallet info periodically

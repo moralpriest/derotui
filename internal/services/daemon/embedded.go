@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	derolog "github.com/deroproject/dero-wallet-cli/internal/log"
 	"net"
 	"os"
 	"os/exec"
@@ -218,12 +220,36 @@ func (d *EmbeddedDaemon) request(req helperRequest) (helperResponse, error) {
 func (d *EmbeddedDaemon) capture(r io.ReadCloser) {
 	defer r.Close()
 	buf := make([]byte, 4096)
+	var leftover string
 	for {
 		n, err := r.Read(buf)
-		if n > 0 && d.logBuf != nil {
-			_, _ = d.logBuf.Write(buf[:n])
+		if n > 0 {
+			chunk := leftover + string(buf[:n])
+			leftover = ""
+			for {
+				i := strings.IndexByte(chunk, '\n')
+				if i < 0 {
+					leftover = chunk
+					break
+				}
+				line := strings.TrimRight(chunk[:i], "\r")
+				chunk = chunk[i+1:]
+				if strings.TrimSpace(line) == "" {
+					continue
+				}
+				if d.logBuf != nil {
+					fmt.Fprintln(d.logBuf, line)
+				}
+				derolog.Info("daemon", "log", line)
+			}
 		}
 		if err != nil {
+			if strings.TrimSpace(leftover) != "" {
+				if d.logBuf != nil {
+					fmt.Fprintln(d.logBuf, leftover)
+				}
+				derolog.Info("daemon", "log", leftover)
+			}
 			return
 		}
 	}
