@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/deroproject/dero-wallet-cli/internal/config"
@@ -18,7 +19,7 @@ func BuildArgs(settings config.DaemonSettings) []string {
 	if settings.Debug {
 		args = append(args, "--debug")
 	}
-	if settings.FastSync && !dataDirHasData(settings.DataDir) {
+	if settings.FastSync && !dataDirHasData(settings.DataDir, settings.Network) {
 		args = append(args, "--fastsync")
 	}
 	if settings.TimeIsInSync {
@@ -57,10 +58,49 @@ func BuildArgs(settings config.DaemonSettings) []string {
 	return args
 }
 
-func dataDirHasData(dir string) bool {
+// dataDirHasData reports whether derod already has chain data for the
+// given network under dataDir. The config dir itself (~/.derotui) always
+// contains wallets/config, which must NOT count as chain data — otherwise
+// --fastsync is skipped on a first start and the daemon does a full sync.
+func dataDirHasData(dir, network string) bool {
+	network = strings.ToLower(strings.TrimSpace(network))
+	var names []string
+	switch network {
+	case "testnet":
+		names = []string{"testnet", "testnet_simulator"}
+	case "simulator":
+		names = []string{"mainnet_simulator"}
+	default:
+		names = []string{"mainnet", "mainnet_simulator"}
+	}
+	for _, name := range names {
+		if chainDirLooksPopulated(filepath.Join(dir, name)) {
+			return true
+		}
+	}
+	base := strings.ToLower(filepath.Base(dir))
+	for _, name := range names {
+		if base == name && chainDirLooksPopulated(dir) {
+			return true
+		}
+	}
+	return false
+}
+
+func chainDirLooksPopulated(dir string) bool {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
-	return len(entries) > 0
+	for _, e := range entries {
+		n := strings.ToLower(e.Name())
+		if strings.HasPrefix(n, ".") {
+			continue
+		}
+		if strings.HasSuffix(n, ".log") || strings.HasSuffix(n, ".lock") {
+			continue
+		}
+		return true
+	}
+	return false
 }

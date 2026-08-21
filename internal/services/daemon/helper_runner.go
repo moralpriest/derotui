@@ -202,7 +202,7 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 	if dataDir == "" {
 		dataDir = globals.GetDataDirectory()
 	}
-	fastsync := settings.FastSync && !dataDirHasData(dataDir)
+	fastsync := settings.FastSync && !dataDirHasData(dataDir, settings.Network)
 	s.logf("daemon starting network=%s data-dir=%s rpc=%s p2p=%s getwork=%s fastsync=%v debug=%v",
 		settings.Network, dataDir, rpcBind, p2pBind, getworkBind, fastsync, settings.Debug)
 
