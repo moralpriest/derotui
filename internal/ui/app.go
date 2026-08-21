@@ -1449,17 +1449,10 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		if m.daemonStatus.WantStart() {
 			m.daemonStatus.ResetActions()
 			isEmbeddedMode := config.GetDaemonSettings().Mode == "embedded" || m.daemonStatus.Snapshot.Source == "Embedded"
-			if !isEmbeddedMode && m.daemonStatus.Snapshot.Source == "Planned Local" && !m.daemonStatus.Snapshot.BinaryReady {
-				m.daemonStatus.Downloading = true
-				m.daemonStatus.DownloadError = ""
-				m.daemonStatus.InstallResult = ""
-				cmds = append(cmds, m.daemonSessionPreviewCmd(), m.setWindowTitleCmd())
-			} else {
-				if !isEmbeddedMode {
-					m.daemonManagedSince = time.Now()
-				}
-				cmds = append(cmds, m.startLocalDaemonCmd())
+			if !isEmbeddedMode {
+				m.daemonManagedSince = time.Now()
 			}
+			cmds = append(cmds, m.startLocalDaemonCmd())
 		}
 		if m.daemonStatus.WantStop() {
 			m.daemonStatus.ResetActions()

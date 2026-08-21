@@ -414,9 +414,6 @@ func (d DaemonStatusModel) renderStateLine() string {
 	if d.Snapshot.Running {
 		return styles.WarningStyle.Render("Starting")
 	}
-	if d.Snapshot.Source == "Planned Local" && !d.Snapshot.BinaryReady && strings.TrimSpace(d.Snapshot.BinaryPath) == "" {
-		return styles.WarningStyle.Render("Not configured")
-	}
 	return styles.ErrorStyle.Render("Stopped")
 }
 

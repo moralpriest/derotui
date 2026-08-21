@@ -134,16 +134,6 @@ func TestDaemonStatusFooterShowsInstallForEmbedded(t *testing.T) {
 	}
 }
 
-// Install is offered when nothing is configured or running.
-func TestDaemonStatusFooterShowsInstallWhenPlanned(t *testing.T) {
-	d := NewDaemonStatus()
-	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Planned Local"})
-
-	view := stripANSI(d.View())
-	if !strings.Contains(view, "I Install Service") {
-		t.Fatal("expected Install Service in footer for an unconfigured daemon")
-	}
-}
 
 // While an uninstall is awaiting confirmation, Y must request apply and the
 // normal page keys (start/stop/install...) must be inert.
@@ -219,7 +209,6 @@ func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
 		{"System Daemon", true},
 		{"Embedded", true},
 		{"Managed Local", true},
-		{"Planned Local", true},
 		{"External Local", false},
 		{"Unknown", false},
 	} {

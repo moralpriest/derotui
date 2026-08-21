@@ -632,12 +632,6 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		managed = true
 	} else {
 		m.daemonManagedSince = time.Time{}
-		// A managed process that has exited is no longer managed — present it
-		// as a stopped, startable node so the page offers Start (and the
-		// footer's Stop shortcut never becomes a no-op).
-		if source == "Managed Local" && !managed {
-			source = "Planned Local"
-		}
 	}
 
 	network := titleDaemonNetwork(firstNonEmpty(msg.snapshot.Network, settings.Network))
@@ -737,7 +731,7 @@ func daemonSettingsForSnapshot(base config.DaemonSettings, snap pages.DaemonStat
 
 func sourceLabel(source string) string {
 	if strings.TrimSpace(source) == "" || source == "Not running" {
-		return "Planned Local"
+		return "Not running"
 	}
 	return source
 }
