@@ -369,14 +369,14 @@ func (d DaemonStatusModel) renderFooter() string {
 	// Install registers the built-in daemon as a background service, so it
 	// applies to embedded mode too. It only makes sense when nothing is
 	// running yet — installing while a daemon is up would start a conflicting
-	// second node on the same ports.
+	// second daemon on the same ports.
 	if !d.Snapshot.Running && !d.Snapshot.Managed {
 		parts = append(parts, k("I")+" "+m("Install Service"))
 	}
 
 	// Reset is offered for any daemon we own or installed: the embedded
-	// helper, a systemd service, or a managed/planned local node. External
-	// local daemons (nodes we merely connected to) are left alone — we
+	// helper, a systemd service, or a managed/planned local daemon. External
+	// local daemons (daemons we merely connected to) are left alone — we
 	// don't own their data.
 	source := strings.ToLower(strings.TrimSpace(d.Snapshot.Source))
 	resettable := isEmbedded || isSystemDaemon ||
@@ -484,7 +484,7 @@ func (d DaemonStatusModel) renderHeightLine() string {
 	return heightStr
 }
 
-// formatSyncPct renders a sync progress percentage, using "<0.1%" so a node
+// formatSyncPct renders a sync progress percentage, using "<0.1%" so a daemon
 // that just started its genesis sync doesn't show a meaningless "0.0%".
 func formatSyncPct(progress float64) string {
 	if progress > 0 && progress < 0.1 {

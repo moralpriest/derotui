@@ -622,17 +622,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cachedDaemonAddress = primary.address
 		}
 
-		if !m.daemonStatus.Snapshot.Running && strings.TrimSpace(m.daemonStatus.Snapshot.IntegratorAddress) == "" {
-			if cfgAddr := strings.TrimSpace(config.GetDaemonSettings().IntegratorAddress); cfgAddr != "" {
-				m.daemonStatus.Snapshot.IntegratorAddress = cfgAddr
-			} else if m.wallet != nil {
-				if addr := strings.TrimSpace(m.wallet.GetInfo().Address); addr != "" {
-					m.daemonStatus.Snapshot.IntegratorAddress = addr
-				}
-			} else if lastMining := strings.TrimSpace(config.GetLastMiningAddress()); lastMining != "" {
-				m.daemonStatus.Snapshot.IntegratorAddress = lastMining
-			}
-		}
+		m.fillIntegratorFallback()
 
 	case daemonManagerMsg:
 		if msg.err != "" {

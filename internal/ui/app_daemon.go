@@ -562,6 +562,30 @@ func (m *Model) restartLocalDaemonCmd() tea.Cmd {
 
 const daemonGracePeriod = 30 * time.Second
 
+
+func (m *Model) fillIntegratorFallback() {
+	addr := strings.TrimSpace(m.daemonStatus.Snapshot.IntegratorAddress)
+	if addr != "" {
+		return
+	}
+	if cfg := strings.TrimSpace(config.GetDaemonSettings().IntegratorAddress); cfg != "" {
+		addr = cfg
+	} else if m.wallet != nil {
+		if w := strings.TrimSpace(m.wallet.GetInfo().Address); w != "" {
+			addr = w
+		}
+	}
+	if addr == "" {
+		addr = strings.TrimSpace(config.GetLastMiningAddress())
+	}
+	if addr == "" {
+		return
+	}
+	snap := m.daemonStatus.Snapshot
+	snap.IntegratorAddress = addr
+	m.daemonStatus.SetSnapshot(snap)
+}
+
 func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 	settings := config.GetDaemonSettings()
 	source := sourceLabel(msg.source)
@@ -658,6 +682,7 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 	}
 
 	m.daemonStatus.SetSnapshot(baseline)
+	m.fillIntegratorFallback()
 	if source == "Embedded" && len(msg.logs) == 0 && m.embeddedDaemon != nil {
 		msg.logs = m.embeddedDaemon.Logs()
 	}

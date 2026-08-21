@@ -156,7 +156,6 @@ func (d *DaemonSettingsModel) activateField() {
 
 	switch rows[d.selected].field {
 	case daemonFieldMode:
-		d.SetError("External local is auto-detected when a standalone derod is running; no download")
 		return
 	case daemonFieldFastSync:
 		d.Settings.FastSync = !d.Settings.FastSync
@@ -306,11 +305,7 @@ func (d DaemonSettingsModel) displayNodeTag() string {
 }
 
 func (d DaemonSettingsModel) footerText() string {
-	base := "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
-	if d.isExternalMode() {
-		return base + " • External local (read-only, no download)"
-	}
-	return base + " • Embedded mode manages derod in-process"
+	return "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
 }
 
 func (d DaemonSettingsModel) isExternalMode() bool {
