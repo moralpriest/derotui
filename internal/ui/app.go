@@ -1474,7 +1474,13 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		}
 		if m.daemonStatus.WantSettings() {
 			m.daemonStatus.ResetActions()
-			m.daemonSettings = pages.NewDaemonSettings(daemonSettingsForSnapshot(config.GetDaemonSettings(), m.daemonStatus.Snapshot))
+			settings := daemonSettingsForSnapshot(config.GetDaemonSettings(), m.daemonStatus.Snapshot)
+			if strings.TrimSpace(settings.IntegratorAddress) == "" && m.wallet != nil {
+				if addr := strings.TrimSpace(m.wallet.GetInfo().Address); addr != "" {
+					settings.IntegratorAddress = addr
+				}
+			}
+			m.daemonSettings = pages.NewDaemonSettings(settings)
 			m.page = PageDaemonSettings
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
