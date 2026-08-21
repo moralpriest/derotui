@@ -203,8 +203,8 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 		dataDir = globals.GetDataDirectory()
 	}
 	fastsync := settings.FastSync && !dataDirHasData(dataDir, settings.Network)
-	s.logf("daemon starting network=%s data-dir=%s rpc=%s p2p=%s getwork=%s fastsync=%v debug=%v",
-		settings.Network, dataDir, rpcBind, p2pBind, getworkBind, fastsync, settings.Debug)
+	s.logf("daemon starting network=%s data-dir=%s rpc=%s p2p=%s getwork=%s fastsync=%v prune=%s debug=%v",
+		settings.Network, dataDir, rpcBind, p2pBind, getworkBind, fastsync, pruneLabel(settings), settings.Debug)
 
 	params := map[string]interface{}{
 		"--testnet":            testnet,
@@ -220,6 +220,7 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 		"--sync-node":          settings.SyncNode,
 		"--offline":            false,
 		"--node-tag":           settings.NodeTag,
+		"--prune-history":      pruneFlag(settings),
 		"--min-peers":          settings.MinPeers,
 		"--max-peers":          settings.MaxPeers,
 		"--add-priority-node":  append([]string(nil), settings.PriorityNodes...),
@@ -402,6 +403,22 @@ func (s *helperState) minerStatus() helperMinerStatus {
 		Threads:    s.miner.GetThreads(),
 		Address:    s.miner.GetAddress(),
 	}
+}
+
+// pruneFlag returns the --prune-history value for derod, or nil when the
+// Full profile is selected (derod keeps the entire history).
+func pruneFlag(settings appconfig.DaemonSettings) interface{} {
+	if settings.IsPruned() {
+		return strings.TrimSpace(settings.PruneHistory)
+	}
+	return nil
+}
+
+func pruneLabel(settings appconfig.DaemonSettings) string {
+	if settings.IsPruned() {
+		return appconfig.DescribePrune(settings.PruneHistory)
+	}
+	return "full"
 }
 
 func normalizedHelperBinds(settings appconfig.DaemonSettings) (string, string, string) {

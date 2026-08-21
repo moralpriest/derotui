@@ -187,6 +187,51 @@ func normalizeDaemonSettings(settings DaemonSettings) DaemonSettings {
 }
 
 // DefaultDaemonDownloadSource returns the official derod release source.
+// PrunePresets are user-friendly prune-history choices, low space to high.
+// Estimated size assumes the DERO average block size of ~2 KB.
+var PrunePresets = []struct {
+	Blocks string
+	Label  string
+}{
+	{"500", "500 blocks (~1 MB)"},
+	{"5000", "5,000 blocks (~10 MB)"},
+	{"50000", "50,000 blocks (~100 MB)"},
+	{"500000", "500,000 blocks (~1 GB)"},
+}
+
+// DefaultPruneHistory is the preset used when switching to the Pruned profile.
+const DefaultPruneHistory = "5000"
+
+// IsPruned reports whether the settings select the Pruned sync profile.
+func (s DaemonSettings) IsPruned() bool {
+	v := strings.TrimSpace(s.PruneHistory)
+	return v != "" && v != "0"
+}
+
+// NextPrunePreset cycles to the next preset after current (wrapping).
+func NextPrunePreset(current string) string {
+	for i, p := range PrunePresets {
+		if p.Blocks == strings.TrimSpace(current) {
+			return PrunePresets[(i+1)%len(PrunePresets)].Blocks
+		}
+	}
+	return PrunePresets[1].Blocks
+}
+
+// DescribePrune returns a friendly label with estimated storage.
+func DescribePrune(blocks string) string {
+	blocks = strings.TrimSpace(blocks)
+	for _, p := range PrunePresets {
+		if p.Blocks == blocks {
+			return p.Label
+		}
+	}
+	if blocks == "" || blocks == "0" {
+		return ""
+	}
+	return blocks + " blocks"
+}
+
 func DefaultDaemonDownloadSource() string {
 	return "https://api.github.com/repos/deroproject/derohe/releases"
 }

@@ -46,8 +46,8 @@ func BuildArgs(settings config.DaemonSettings) []string {
 	appendKV("--log-dir", settings.LogDir)
 	appendKV("--clog-level", settings.ConsoleLogLevel)
 	appendKV("--flog-level", settings.FileLogLevel)
-	if strings.TrimSpace(settings.PruneHistory) != "50" {
-		appendKV("--prune-history", settings.PruneHistory)
+	if ph := strings.TrimSpace(settings.PruneHistory); ph != "" && ph != "0" {
+		appendKV("--prune-history", ph)
 	}
 	for _, node := range settings.PriorityNodes {
 		appendKV("--add-priority-node", node)

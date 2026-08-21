@@ -21,6 +21,8 @@ const (
 	daemonFieldNetwork
 	daemonFieldDataDir
 	daemonFieldFastSync
+	daemonFieldSyncProfile
+	daemonFieldPruneHistory
 	daemonFieldIntegrator
 	daemonFieldNodeTag
 	daemonFieldRPCBind
@@ -139,6 +141,8 @@ func (d DaemonSettingsModel) rows() []daemonSettingRow {
 		{field: daemonFieldNetwork, label: "Network", value: d.displayNetwork()},
 		{field: daemonFieldDataDir, label: "Data Directory", value: d.display(d.Settings.DataDir)},
 		{field: daemonFieldFastSync, label: "Fast Sync", value: fmt.Sprintf("%t", d.Settings.FastSync)},
+		{field: daemonFieldSyncProfile, label: "Sync Profile", value: d.displaySyncProfile()},
+		{field: daemonFieldPruneHistory, label: "Prune History", value: d.displayPruneHistory()},
 		{field: daemonFieldIntegrator, label: "Integrator Address", value: truncateMiddle(d.display(d.Settings.IntegratorAddress), 32)},
 		{field: daemonFieldNodeTag, label: "Node Tag", value: d.displayNodeTag()},
 		{field: daemonFieldRPCBind, label: "RPC Bind", value: d.display(d.Settings.RPCBind)},
@@ -159,6 +163,22 @@ func (d *DaemonSettingsModel) activateField() {
 	switch rows[d.selected].field {
 	case daemonFieldMode:
 		return
+	case daemonFieldSyncProfile:
+		if d.Settings.IsPruned() {
+			d.Settings.PruneHistory = ""
+			d.SetSuccess("Sync profile: Full (entire chain history)")
+		} else {
+			d.Settings.PruneHistory = config.DefaultPruneHistory
+			d.SetSuccess("Sync profile: Pruned (" + config.DescribePrune(d.Settings.PruneHistory) + ")")
+		}
+		d.restartRequired = true
+	case daemonFieldPruneHistory:
+		if !d.Settings.IsPruned() {
+			return
+		}
+		d.Settings.PruneHistory = config.NextPrunePreset(d.Settings.PruneHistory)
+		d.SetSuccess("Prune history: " + config.DescribePrune(d.Settings.PruneHistory))
+		d.restartRequired = true
 	case daemonFieldFastSync:
 		d.Settings.FastSync = !d.Settings.FastSync
 		d.restartRequired = true
@@ -272,6 +292,20 @@ func (d DaemonSettingsModel) display(v string) string {
 		return "Not set"
 	}
 	return v
+}
+
+func (d DaemonSettingsModel) displaySyncProfile() string {
+	if d.Settings.IsPruned() {
+		return styles.WarningStyle.Render("Pruned")
+	}
+	return styles.SuccessStyle.Render("Full")
+}
+
+func (d DaemonSettingsModel) displayPruneHistory() string {
+	if !d.Settings.IsPruned() {
+		return styles.MutedStyle.Render("all history")
+	}
+	return styles.TextStyle.Render(config.DescribePrune(d.Settings.PruneHistory))
 }
 
 func (d DaemonSettingsModel) displayMode() string {
