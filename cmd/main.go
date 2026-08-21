@@ -294,9 +294,6 @@ func startEmbeddedDaemonIfNeeded(opts ui.CLIOptions) (*daemonservice.EmbeddedDae
 	}
 
 	settings := configuredDaemonSettings(opts)
-	if settings.Mode == "external" {
-		return nil, "", nil
-	}
 	if shouldUseExistingLocalDaemon(settings) {
 		return nil, settings.RPCBind, nil
 	}
@@ -306,9 +303,6 @@ func startEmbeddedDaemonIfNeeded(opts ui.CLIOptions) (*daemonservice.EmbeddedDae
 
 func runHeadlessEmbeddedDaemon(opts ui.CLIOptions) error {
 	settings := configuredDaemonSettings(opts)
-	if settings.Mode == "external" {
-		return fmt.Errorf("headless daemon mode requires embedded mode in daemon settings")
-	}
 	if shouldUseExistingLocalDaemon(settings) {
 		fmt.Printf("Using existing daemon on %s\n", settings.RPCBind)
 		select {}

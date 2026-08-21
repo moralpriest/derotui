@@ -133,7 +133,6 @@ func (d DaemonSettingsModel) View() string {
 
 func (d DaemonSettingsModel) rows() []daemonSettingRow {
 	rows := []daemonSettingRow{
-		{field: daemonFieldMode, label: "Mode", value: d.displayMode()},
 		{field: daemonFieldNetwork, label: "Network", value: d.displayNetwork()},
 		{field: daemonFieldDataDir, label: "Data Directory", value: d.display(d.Settings.DataDir)},
 		{field: daemonFieldFastSync, label: "Fast Sync", value: fmt.Sprintf("%t", d.Settings.FastSync)},
@@ -143,11 +142,6 @@ func (d DaemonSettingsModel) rows() []daemonSettingRow {
 		{field: daemonFieldP2PBind, label: "P2P Bind", value: d.display(d.Settings.P2PBind)},
 		{field: daemonFieldGetWorkBind, label: "GetWork Bind", value: d.display(d.Settings.GetWorkBind)},
 		{field: daemonFieldDebug, label: "Debug", value: fmt.Sprintf("%t", d.Settings.Debug)},
-	}
-
-	if d.isExternalMode() {
-		rows = append(rows[:1], append([]daemonSettingRow{{field: daemonFieldBinary, label: "Binary Path", value: d.display(d.Settings.BinaryPath)}}, rows[1:]...)...)
-		rows = append(rows, daemonSettingRow{field: daemonFieldSocksProxy, label: "SOCKS Proxy", value: d.display(d.Settings.SocksProxy)})
 	}
 
 	return rows
@@ -160,14 +154,6 @@ func (d *DaemonSettingsModel) activateField() {
 	}
 
 	switch rows[d.selected].field {
-	case daemonFieldMode:
-		if d.isExternalMode() {
-			d.Settings.Mode = "embedded"
-		} else {
-			d.Settings.Mode = "external"
-		}
-		d.restartRequired = true
-		d.clampSelection()
 	case daemonFieldFastSync:
 		d.Settings.FastSync = !d.Settings.FastSync
 		d.restartRequired = true
@@ -206,9 +192,6 @@ func (d *DaemonSettingsModel) applyNetworkBindDefaults(prevNetwork, nextNetwork 
 	}
 	if dataDirLooksDefaultLike(d.Settings.DataDir, prevDefaults.DataDir) {
 		d.Settings.DataDir = nextDefaults.DataDir
-	}
-	if d.isExternalMode() && strings.TrimSpace(d.Settings.BinaryPath) == "" {
-		d.Settings.BinaryPath = nextDefaults.BinaryPath
 	}
 }
 
@@ -287,9 +270,6 @@ func (d DaemonSettingsModel) display(v string) string {
 }
 
 func (d DaemonSettingsModel) displayMode() string {
-	if d.isExternalMode() {
-		return styles.WarningStyle.Render("external")
-	}
 	return styles.SuccessStyle.Render("embedded")
 }
 
@@ -319,15 +299,11 @@ func (d DaemonSettingsModel) displayNodeTag() string {
 }
 
 func (d DaemonSettingsModel) footerText() string {
-	base := "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
-	if d.isExternalMode() {
-		return base + " • External mode shows binary and SOCKS settings"
-	}
-	return base + " • Embedded mode manages derod in-process"
+	return "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back • Embedded mode manages derod in-process"
 }
 
 func (d DaemonSettingsModel) isExternalMode() bool {
-	return strings.EqualFold(strings.TrimSpace(d.Settings.Mode), "external")
+	return false
 }
 
 func (d *DaemonSettingsModel) clampSelection() {
