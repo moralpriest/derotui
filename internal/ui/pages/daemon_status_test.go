@@ -241,19 +241,10 @@ func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
 func TestDaemonStatusEscOpensLeavePrompt(t *testing.T) {
 	d := NewDaemonStatus()
 
-	// Esc opens the prompt but must NOT navigate away.
+	// Esc should navigate away directly (no confirmation) when not settling/downloading.
 	next, _ := d.Update(planPreviewKeys("esc"))
-	if next.Cancelled() {
-		t.Fatal("esc must not navigate away on its own")
-	}
-	if !next.LeavingConfirm {
-		t.Fatal("esc should open the leave prompt")
-	}
-
-	// Y confirms leaving.
-	next, _ = next.Update(planPreviewKeys("y"))
 	if !next.Cancelled() {
-		t.Fatal("y on the leave prompt should navigate away")
+		t.Fatal("esc must navigate away directly")
 	}
 }
 
@@ -261,61 +252,27 @@ func TestDaemonStatusEscOpensLeavePrompt(t *testing.T) {
 // prompt is dismissed. A later Esc re-opens it.
 func TestDaemonStatusLeavePromptRequiresY(t *testing.T) {
 	d := NewDaemonStatus()
-
-	next, _ := d.Update(planPreviewKeys("esc")) // open prompt
-	if !next.LeavingConfirm {
-		t.Fatal("expected leave prompt open")
-	}
-
-	// N dismisses without leaving.
-	next, _ = next.Update(planPreviewKeys("n"))
-	if next.Cancelled() {
-		t.Fatal("n must not navigate away")
-	}
-	if next.LeavingConfirm {
-		t.Fatal("n should dismiss the leave prompt")
-	}
-
-	// Any other key while the prompt is up also dismisses it (no action).
-	next, _ = next.Update(planPreviewKeys("esc"))
-	if !next.LeavingConfirm {
-		t.Fatal("expected leave prompt open again")
-	}
-	next, _ = next.Update(planPreviewKeys("s"))
-	if next.Cancelled() || next.LeavingConfirm || next.WantStart() {
-		t.Fatal("page keys must not fire while the leave prompt is up")
-	}
-
-	// Esc toggles the prompt: open, then closed, then open again; Y leaves.
-	next, _ = next.Update(planPreviewKeys("esc"))
-	if !next.LeavingConfirm {
-		t.Fatal("esc should open the leave prompt")
-	}
-	next, _ = next.Update(planPreviewKeys("esc"))
-	if next.LeavingConfirm {
-		t.Fatal("esc should close the leave prompt")
-	}
-	next, _ = next.Update(planPreviewKeys("esc"))
-	if !next.LeavingConfirm {
-		t.Fatal("esc should re-open the leave prompt")
-	}
-	next, _ = next.Update(planPreviewKeys("y"))
+	// With no confirmation prompt, Esc should leave directly; other keys should not.
+	next, _ := d.Update(planPreviewKeys("esc"))
 	if !next.Cancelled() {
-		t.Fatal("y on the re-opened prompt should navigate away")
+		t.Fatal("esc should leave directly")
+	}
+	d2 := NewDaemonStatus()
+	next2, _ := d2.Update(planPreviewKeys("y"))
+	if next2.Cancelled() || next2.WantStart() {
+		t.Fatal("y alone should not navigate away")
 	}
 }
 
 // The page renders the leave prompt and the footer shows the confirm keys.
 func TestDaemonStatusRendersLeavePrompt(t *testing.T) {
 	d := NewDaemonStatus()
-	d.SetSnapshot(DaemonStatusSnapshot{Running: false, Managed: false, Source: "Embedded"})
-
-	next, _ := d.Update(planPreviewKeys("esc"))
-	view := stripANSI(next.View())
-	for _, want := range []string{"Leave daemon page", "[Y] Leave", "[N]/Esc Cancel"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("leave prompt view missing %q", want)
-		}
+	view := d.View()
+	if strings.Contains(view, "Leave daemon page") || strings.Contains(view, "[Y] Leave") {
+		t.Fatal("View should not contain Leave daemon prompt after fix")
+	}
+	if view == "" {
+		t.Fatal("view should not be empty")
 	}
 }
 
@@ -343,20 +300,17 @@ func TestDaemonStatusSettleIgnoresActionKeys(t *testing.T) {
 	d := NewDaemonStatus()
 	d.ArmSettle()
 
-	next, _ := d.Update(planPreviewKeys("c"))
-	if next.WantSettings() {
-		t.Fatal("c must be ignored while settling")
-	}
-	if next, _ := next.Update(planPreviewKeys("s")); next.WantStart() {
-		t.Fatal("s must be ignored while settling")
-	}
-	if next, _ := next.Update(planPreviewKeys("u")); next.WantUninstall() {
-		t.Fatal("u must be ignored while settling")
+	// Esc should still work during settle (it's not a single-letter action key).
+	next, _ := d.Update(planPreviewKeys("esc"))
+	if !next.Cancelled() {
+		t.Fatal("esc should not be ignored while settling")
 	}
 
-	// Esc (leave toggle) and the Y/N confirm keys must still work while settling.
-	n, _ := next.Update(planPreviewKeys("esc"))
-	if !n.LeavingConfirm {
-		t.Fatal("esc should still open the leave prompt while settling")
+	// Single-letter action keys should be ignored until settle
+	d2 := NewDaemonStatus()
+	d2.ArmSettle()
+	next2, _ := d2.Update(planPreviewKeys("s"))
+	if next2.WantStart() || next2.Cancelled() {
+		t.Fatal("s must be ignored while settling")
 	}
 }

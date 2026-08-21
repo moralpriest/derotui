@@ -82,7 +82,6 @@ type DaemonStatusModel struct {
 	wantUninstallApply  bool
 	wantUninstallDone   bool
 	ConfirmingUninstall bool
-	LeavingConfirm      bool
 	cancelled           bool
 	// settleUntil, when in the future, suppresses single-letter action keys
 	// (start/stop/config/install/reset/...). The terminal can deliver a stray
@@ -155,20 +154,11 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 		// arriving from the terminal (e.g. a fragmented escape sequence) can
 		// never navigate away on its own — it just opens (or closes) the prompt.
 		if isEsc {
-			d.LeavingConfirm = !d.LeavingConfirm
+			d.cancelled = true
 			return d, nil
 		}
 		// While the leave prompt is up, only Y/N apply — regular page keys
 		// must not fire.
-		if d.LeavingConfirm {
-			switch {
-			case msg.String() == "y" || msg.String() == "Y":
-				d.cancelled = true
-			default:
-				d.LeavingConfirm = false
-			}
-			return d, nil
-		}
 		// Ignore single-letter action keys while settling (see settleUntil).
 		if time.Now().Before(d.settleUntil) {
 			return d, nil
@@ -294,14 +284,6 @@ func (d DaemonStatusModel) View() string {
 		rows = append(rows, d.renderUninstallConfirm()...)
 	}
 
-	if d.LeavingConfirm && !d.Downloading {
-		rows = append(rows, "", sectionHeader("Leave daemon page", styles.ColorAccent))
-		rows = append(rows,
-			styles.MutedStyle.Render("  Go back to the welcome screen?"),
-			"",
-			styles.WarningStyle.Render("  [Y] Leave \u2022 [N]/Esc Cancel"),
-		)
-	}
 
 	rows = append(rows, "", d.renderFooter())
 
@@ -402,9 +384,6 @@ func (d DaemonStatusModel) renderFooter() string {
 		strings.Contains(source, "managed") || strings.Contains(source, "planned")
 	if !d.Downloading && resettable && !d.ConfirmingUninstall && d.InstallPlan == nil {
 		parts = append(parts, k("U")+" "+m("Reset"))
-	}
-	if d.LeavingConfirm {
-		return styles.WarningStyle.Render("  [Y] Leave \u2022 [N]/Esc Cancel")
 	}
 	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
 
@@ -649,6 +628,5 @@ func (d *DaemonStatusModel) ResetActions() {
 	d.wantUninstall = false
 	d.wantUninstallApply = false
 	d.wantUninstallDone = false
-	d.LeavingConfirm = false
 	d.cancelled = false
 }
