@@ -133,6 +133,7 @@ func (d DaemonSettingsModel) View() string {
 
 func (d DaemonSettingsModel) rows() []daemonSettingRow {
 	rows := []daemonSettingRow{
+		{field: daemonFieldMode, label: "Mode", value: d.displayMode()},
 		{field: daemonFieldNetwork, label: "Network", value: d.displayNetwork()},
 		{field: daemonFieldDataDir, label: "Data Directory", value: d.display(d.Settings.DataDir)},
 		{field: daemonFieldFastSync, label: "Fast Sync", value: fmt.Sprintf("%t", d.Settings.FastSync)},
@@ -154,6 +155,9 @@ func (d *DaemonSettingsModel) activateField() {
 	}
 
 	switch rows[d.selected].field {
+	case daemonFieldMode:
+		d.SetError("External local is auto-detected when a standalone derod is running; no download")
+		return
 	case daemonFieldFastSync:
 		d.Settings.FastSync = !d.Settings.FastSync
 		d.restartRequired = true
@@ -270,6 +274,9 @@ func (d DaemonSettingsModel) display(v string) string {
 }
 
 func (d DaemonSettingsModel) displayMode() string {
+	if d.isExternalMode() {
+		return styles.WarningStyle.Render("external local")
+	}
 	return styles.SuccessStyle.Render("embedded")
 }
 
@@ -299,11 +306,15 @@ func (d DaemonSettingsModel) displayNodeTag() string {
 }
 
 func (d DaemonSettingsModel) footerText() string {
-	return "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
+	base := "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
+	if d.isExternalMode() {
+		return base + " • External local (read-only, no download)"
+	}
+	return base + " • Embedded mode manages derod in-process"
 }
 
 func (d DaemonSettingsModel) isExternalMode() bool {
-	return false
+	return strings.EqualFold(strings.TrimSpace(d.Settings.Mode), "external")
 }
 
 func (d *DaemonSettingsModel) clampSelection() {

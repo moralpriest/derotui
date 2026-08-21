@@ -631,7 +631,7 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		RPCBind:               rpcBind,
 		P2PBind:               p2pBind,
 		GetWorkBind:           msg.snapshot.GetWorkBind,
-		IntegratorAddress:     settings.IntegratorAddress,
+		IntegratorAddress:    settings.IntegratorAddress,
 		LaunchArgs:            msg.snapshot.LaunchArgs,
 		LastError:             firstNonEmpty(msg.err, msg.snapshot.LastError, m.lastEmbeddedError),
 		IsOnline:              info.IsOnline,
@@ -741,15 +741,15 @@ func firstNonEmpty(values ...string) string {
 func snapshotFromExternal(settings config.DaemonSettings, address string, info wallet.DaemonInfo) daemonservice.Snapshot {
 	pid := daemonservice.FindDerodPID(address)
 	snap := daemonservice.Snapshot{
-		Running:     info.IsOnline,
-		Managed:     false,
-		PID:         pid,
-		Network:     strings.ToLower(info.Network),
-		BinaryPath:  settings.BinaryPath,
-		DataDir:     settings.DataDir,
-		RPCBind:     address,
-		P2PBind:     settings.P2PBind,
-		GetWorkBind: settings.GetWorkBind,
+		Running:            info.IsOnline,
+		Managed:            false,
+		PID:                pid,
+		Network:            strings.ToLower(info.Network),
+		BinaryPath:         settings.BinaryPath,
+		DataDir:            settings.DataDir,
+		RPCBind:            address,
+		P2PBind:            settings.P2PBind,
+		GetWorkBind:        settings.GetWorkBind,
 	}
 	// Reflect the actual running process: read its real command line so the
 	// config/logs shown match the external node, not the app's saved settings.
@@ -902,16 +902,16 @@ func snapshotFromSystemd(settings config.DaemonSettings, service systemdservice.
 		}
 	}
 	snap := daemonservice.Snapshot{
-		Running:     service.Active,
-		Managed:     false,
-		PID:         daemonservice.FindPIDByAddress(address),
-		Network:     network,
-		BinaryPath:  settings.BinaryPath,
-		DataDir:     settings.DataDir,
-		RPCBind:     address,
-		P2PBind:     settings.P2PBind,
-		GetWorkBind: settings.GetWorkBind,
-		LastExit:    serviceState,
+		Running:            service.Active,
+		Managed:            false,
+		PID:                daemonservice.FindPIDByAddress(address),
+		Network:            network,
+		BinaryPath:         settings.BinaryPath,
+		DataDir:            settings.DataDir,
+		RPCBind:            address,
+		P2PBind:            settings.P2PBind,
+		GetWorkBind:        settings.GetWorkBind,
+		LastExit:           serviceState,
 	}
 	if args := argsFromExecStart(service.ExecStart); len(args) > 0 {
 		snap.LaunchArgs = args

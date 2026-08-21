@@ -177,11 +177,11 @@ func normalizeDaemonSettings(settings DaemonSettings) DaemonSettings {
 	if settings.PruneHistory == "" {
 		settings.PruneHistory = defaults.PruneHistory
 	}
-	if settings.Mode == "" || strings.EqualFold(strings.TrimSpace(settings.Mode), "external") {
+	if settings.Mode == "" {
 		settings.Mode = defaults.Mode
 	}
-	if strings.EqualFold(strings.TrimSpace(settings.Mode), "external") {
-		settings.Mode = "embedded"
+	if !strings.EqualFold(strings.TrimSpace(settings.Mode), "embedded") && !strings.EqualFold(strings.TrimSpace(settings.Mode), "external") {
+		settings.Mode = defaults.Mode
 	}
 	return settings
 }

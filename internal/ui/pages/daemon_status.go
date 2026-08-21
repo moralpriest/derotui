@@ -256,13 +256,13 @@ func (d DaemonStatusModel) View() string {
 	}
 
 	rows = append(rows, "", sectionHeader("Configuration", styles.ColorAccent))
-	if true { // always embedded, external removed
+	if strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded") {
 		rows = append(rows,
-			row("Mode:", styles.SuccessStyle.Render("Embedded Helper")),
+			row("Mode:", styles.SuccessStyle.Render("Embedded")),
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
 			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
 			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
-			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
+			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), 32)),
 		)
 	} else {
 		rows = append(rows,
@@ -270,7 +270,7 @@ func (d DaemonStatusModel) View() string {
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
 			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
 			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
-			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
+			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), 32)),
 		)
 	}
 
@@ -317,7 +317,7 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 		rows = append(rows, val("Node Tag:", plan.NodeTag))
 	}
 	if strings.TrimSpace(plan.IntegratorAddress) != "" {
-		rows = append(rows, styles.MutedStyle.Render(padLabelText("Integrator:")) + styles.TextStyle.Render(truncateMiddle(plan.IntegratorAddress, daemonStatusContentWidth-daemonStatusLabelWidth-1)))
+		rows = append(rows, styles.MutedStyle.Render(padLabelText("Integrator:")) + styles.TextStyle.Render(truncateMiddle(plan.IntegratorAddress, 32)))
 	}
 	if strings.TrimSpace(plan.Network) != "" {
 		rows = append(rows, val("Network:", plan.Network))
