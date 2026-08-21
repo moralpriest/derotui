@@ -157,48 +157,46 @@ func (m MinerModel) Update(msg tea.Msg) (MinerModel, tea.Cmd) {
 
 func (m MinerModel) View() string {
 	deroLogo := styles.Logo()
-	axeArtStr := ` /\_[]_/\
-              |] _||_ [|
-       ___     \/ || \/
-      /___\       ||
-     (|0 0|)      ||
-   __/{\U/}\_ ___/vvv
-  / \  {~}   / _|_P|
-  | /\  ~   /_/   []
-  |_| (____)
-  \_]/______\
-     _\_||_/_`
-	axeArt := lipgloss.NewStyle().Foreground(styles.ColorAccent).Render(axeArtStr)
-	headerArt := lipgloss.JoinHorizontal(lipgloss.Center, deroLogo, "   ", axeArt)
-	if lipgloss.Width(headerArt) > 70 {
-		headerArt = lipgloss.JoinVertical(lipgloss.Center, deroLogo, "", axeArt)
+	if !m.Running {
+		deroLogo = lipgloss.NewStyle().Faint(true).Render(deroLogo)
 	}
-	headerArt = lipgloss.NewStyle().PaddingTop(2).Render(headerArt)
-	title := styles.TitleStyle.Render("Miner")
+	var title string
+	if m.Running {
+		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[m.spinnerFrame%10]
+		title = styles.SuccessStyle.Render("Mining " + spinner)
+	} else {
+		title = styles.MutedStyle.Render("Stopped")
+	}
+	hr := formatMinerHashrate(m.Hashrate)
+	var hrStyled string
+	if m.Hashrate == 0 {
+		hrStyled = styles.MutedStyle.Render(hr)
+	} else {
+		hrStyled = lipgloss.NewStyle().Foreground(styles.ColorSuccess).Bold(true).Render(hr)
+	}
+	innerW := styles.Width - 6
+	headerTitle := styles.TitleStyle.Render("Miner")
+	statusHr := lipgloss.JoinHorizontal(lipgloss.Center, title, "    ", hrStyled)
+	headerBlock := lipgloss.JoinVertical(lipgloss.Center, headerTitle, "", deroLogo, "", statusHr)
+	headerBlock = lipgloss.PlaceHorizontal(innerW, lipgloss.Center, headerBlock)
 	rows := []string{
+		headerBlock,
 		"",
-		headerArt,
-		title,
-		"",
-		styles.MutedStyle.Render("Status: ") + m.renderStatus(),
 		styles.MutedStyle.Render("Threads: ") + styles.AccentStyle.Render(fmt.Sprintf("%d/%d", m.Threads, m.MaxThreads)),
-		styles.MutedStyle.Render("Hashrate: ") + m.hashrateStyled(),
-		styles.MutedStyle.Render("Total Hashes: ") + styles.TextStyle.Render(formatUint64(m.Hashes)),
 		styles.MutedStyle.Render("Minis: ") + m.minisStyled(),
 		styles.MutedStyle.Render("Blocks: ") + m.blocksStyled(),
 		styles.MutedStyle.Render("Rejected: ") + m.rejectedStyled(),
 		styles.MutedStyle.Render("Height: ") + styles.TextStyle.Render(fmt.Sprintf("%d", m.Height)),
 		styles.MutedStyle.Render("Difficulty: ") + styles.TextStyle.Render(formatMinerDifficulty(m.Difficulty)),
 		styles.MutedStyle.Render("Uptime: ") + styles.TextStyle.Render(formatMinerUptime(m.Uptime)),
+		styles.MutedStyle.Render("Total Hashes: ") + styles.TextStyle.Render(formatUint64(m.Hashes)),
 	}
 
 	if m.editingAddress {
-		rows = append(rows, m.addressInput.View())
+		rows = append(rows, "", m.addressInput.View())
 		if m.addressError != "" {
 			rows = append(rows, styles.ErrorStyle.Render("✗ "+m.addressError))
 		}
-	} else {
-		rows = append(rows, styles.MutedStyle.Render("Address: ")+m.renderAddress())
 	}
 	if m.Status != "" {
 		rows = append(rows, "", styles.MutedStyle.Render(m.Status))
@@ -208,9 +206,13 @@ func (m MinerModel) View() string {
 	}
 
 	rows = append(rows, "", styles.MutedStyle.Render(m.renderFooter()))
-	boxStyle := styles.ThemedBoxStyle().Width(styles.Width).Padding(2, 4)
+	boxStyle := styles.ThemedBoxStyle().Width(styles.Width).Padding(1, 2)
 	if m.Running {
-		boxStyle = boxStyle.BorderForeground(styles.ColorSuccess)
+		if m.spinnerFrame%2 == 1 {
+			boxStyle = boxStyle.BorderForeground(styles.ColorWarning)
+		} else {
+			boxStyle = boxStyle.BorderForeground(styles.ColorSuccess)
+		}
 	}
 	content := boxStyle.Render(strings.Join(rows, "\n"))
 	w, h := m.width, m.height
@@ -223,7 +225,7 @@ func (m MinerModel) View() string {
 	if h < 36 {
 		h = 36
 	}
-	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Center, content)
+	return lipgloss.Place(w, h, lipgloss.Center, lipgloss.Top, content)
 }
 
 func (m *MinerModel) SetRunning(running bool) {
