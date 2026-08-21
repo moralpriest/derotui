@@ -284,7 +284,6 @@ func (d DaemonStatusModel) View() string {
 		rows = append(rows, d.renderUninstallConfirm()...)
 	}
 
-
 	rows = append(rows, "", d.renderFooter())
 
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
@@ -334,8 +333,8 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 // confirmation before any system-level changes are made.
 func (d DaemonStatusModel) renderUninstallConfirm() []string {
 	rows := []string{
-		styles.MutedStyle.Render("  Stops the daemon, removes the derod service and downloaded"),
-		styles.MutedStyle.Render("  binary, and deletes the chain data folder \u2014 starting from scratch."),
+		styles.MutedStyle.Render("  Stops the daemon, removes the derod service and"),
+		styles.MutedStyle.Render("  deletes the chain data folder — starting from scratch."),
 		styles.MutedStyle.Render("  Wallet files and app config are kept."),
 		"",
 		styles.WarningStyle.Render("  [Y] Reset \u2022 [N]/Esc Cancel"),
