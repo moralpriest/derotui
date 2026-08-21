@@ -642,29 +642,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonStatus.SetInstallPlan(&msg.plan)
 		}
 
-	case daemonSessionPreviewMsg:
-		m.daemonStatus.Downloading = false
-		if msg.err != "" {
-			m.daemonStatus.DownloadError = msg.err
-		} else {
-			m.daemonStatus.Downloading = true
-			cmds = append(cmds, m.daemonInstallDownloadCmd(msg.plan))
-		}
-
-	case daemonInstallDownloadMsg:
-		m.daemonStatus.Downloading = false
-		if msg.err != "" {
-			m.daemonStatus.DownloadError = msg.err
-		} else {
-			settings := config.GetDaemonSettings()
-			settings.BinaryPath = msg.plan.BinaryTarget
-			_ = config.SetDaemonSettings(settings)
-			m.daemonStatus.DownloadError = ""
-			m.daemonStatus.InstallResult = "Downloaded and extracted derod to " + msg.target
-			m.daemonManagedSince = time.Now()
-			cmds = append(cmds, m.startLocalDaemonCmd(), m.setWindowTitleCmd())
-		}
-
 	case daemonInstallApplyMsg:
 		m.daemonStatus.ResetInstall()
 		if msg.err != "" {

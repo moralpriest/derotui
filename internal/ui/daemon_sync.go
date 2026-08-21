@@ -105,6 +105,20 @@ func classifyDaemonSync(info wallet.DaemonInfo, network string, peerHeight int64
 		return info
 	}
 
+	// Right after start the chain reports height 0; that is "starting",
+	// not mid-sync — keep the state line honest.
+	if info.Height == 0 {
+		info.IsSynced = false
+		info.IsSyncing = false
+		info.IsBootstrapping = false
+		info.IsFinalizingBootstrap = false
+		info.SyncProgress = 0
+		if peerHeight > 0 {
+			info.PeerHeight = peerHeight
+		}
+		return info
+	}
+
 	target := peerHeight
 	if target <= 0 {
 		if ref, ok := networkReferenceHeight(network); ok {

@@ -61,6 +61,11 @@ func (d DaemonSettingsModel) Update(msg tea.Msg) (DaemonSettingsModel, tea.Cmd) 
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		if d.editing {
+			s := msg.String()
+			if d.editingIntegrator() && (s == "w" || s == "W") {
+				d.wantUseWallet = true
+				return d, nil
+			}
 			switch {
 			case key.Matches(msg, pageEscKeys):
 				d.editing = false
@@ -68,7 +73,6 @@ func (d DaemonSettingsModel) Update(msg tea.Msg) (DaemonSettingsModel, tea.Cmd) 
 			case key.Matches(msg, pageEnterKeys):
 				d.applyEdit()
 			default:
-				s := msg.String()
 				if s == "backspace" {
 					if len(d.editBuffer) > 0 {
 						d.editBuffer = d.editBuffer[:len(d.editBuffer)-1]
@@ -96,8 +100,6 @@ func (d DaemonSettingsModel) Update(msg tea.Msg) (DaemonSettingsModel, tea.Cmd) 
 			}
 		case key.Matches(msg, pageEnterKeys):
 			d.activateField()
-		case msg.String() == "w":
-			d.wantUseWallet = true
 		case msg.String() == "s":
 			d.saved = true
 		}
@@ -305,7 +307,24 @@ func (d DaemonSettingsModel) displayNodeTag() string {
 }
 
 func (d DaemonSettingsModel) footerText() string {
-	return "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
+	if d.editingIntegrator() {
+		return "Enter Apply • [W] Use wallet address • Esc Cancel"
+	}
+	if d.editing {
+		return "Enter Apply • Esc Cancel"
+	}
+	return "Enter Edit/Toggle • [S] Save • Esc Back"
+}
+
+func (d DaemonSettingsModel) editingIntegrator() bool {
+	if !d.editing {
+		return false
+	}
+	rows := d.rows()
+	if d.selected < 0 || d.selected >= len(rows) {
+		return false
+	}
+	return rows[d.selected].field == daemonFieldIntegrator
 }
 
 func (d DaemonSettingsModel) isExternalMode() bool {

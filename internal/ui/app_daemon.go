@@ -677,6 +677,9 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 
 	m.daemonStatus.SetSnapshot(baseline)
 	m.fillIntegratorFallback()
+	derolog.Debug("daemon", "status.refresh", "snapshot updated",
+		"source", source, "running", fmt.Sprintf("%t", baseline.Running),
+		"height", fmt.Sprintf("%d", baseline.BlockHeight), "peer_height", fmt.Sprintf("%d", baseline.PeerHeight))
 	if source == "Embedded" && len(msg.logs) == 0 && m.embeddedDaemon != nil {
 		msg.logs = m.embeddedDaemon.Logs()
 	}

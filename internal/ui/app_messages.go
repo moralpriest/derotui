@@ -117,16 +117,7 @@ type daemonInstallPreviewMsg struct {
 	err  string
 }
 
-type daemonSessionPreviewMsg struct {
-	plan installer.Plan
-	err  string
-}
 
-type daemonInstallDownloadMsg struct {
-	err    string
-	target string
-	plan   installer.Plan
-}
 
 type daemonInstallApplyMsg struct {
 	err         string

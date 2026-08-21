@@ -10,7 +10,6 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"github.com/deroproject/dero-wallet-cli/internal/services/installer"
-	"github.com/deroproject/dero-wallet-cli/internal/services/releases"
 	systemdservice "github.com/deroproject/dero-wallet-cli/internal/services/systemd"
 )
 
@@ -28,29 +27,7 @@ func (m *Model) daemonInstallPreviewCmd() tea.Cmd {
 	}
 }
 
-func (m *Model) daemonSessionPreviewCmd() tea.Cmd {
-	settings := config.GetDaemonSettings()
-	return func() tea.Msg {
-		match, err := releases.DiscoverOfficialDerod(settings.DownloadSource)
-		if err != nil {
-			return daemonSessionPreviewMsg{err: err.Error()}
-		}
-		plan, err := installer.BuildSessionPlan(settings, match)
-		if err != nil {
-			return daemonSessionPreviewMsg{err: err.Error()}
-		}
-		return daemonSessionPreviewMsg{plan: plan}
-	}
-}
 
-func (m *Model) daemonInstallDownloadCmd(plan installer.Plan) tea.Cmd {
-	return func() tea.Msg {
-		if err := installer.DownloadAndExtractDerod(plan); err != nil {
-			return daemonInstallDownloadMsg{err: err.Error(), plan: plan}
-		}
-		return daemonInstallDownloadMsg{target: plan.BinaryTarget, plan: plan}
-	}
-}
 
 func installDerodUnit(plan installer.Plan, scope systemdservice.Scope) error {
 	wantedBy := "multi-user.target"

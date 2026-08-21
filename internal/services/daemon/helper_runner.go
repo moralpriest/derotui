@@ -25,13 +25,14 @@ import (
 )
 
 type helperState struct {
-	mu       sync.RWMutex
-	daemon   *derodpkg.Daemon
-	chain    *blockchain.Blockchain
-	logBuf   *LogBuffer
-	miner    *minerservice.Miner
-	settings appconfig.DaemonSettings
-	running  bool
+	mu          sync.RWMutex
+	daemon      *derodpkg.Daemon
+	chain       *blockchain.Blockchain
+	logBuf      *LogBuffer
+	miner       *minerservice.Miner
+	settings    appconfig.DaemonSettings
+	running     bool
+	stopSyncLog chan struct{}
 }
 
 // RunHelper runs the daemon helper process. When serviceMode is true, the
@@ -71,6 +72,54 @@ func RunHelper(serviceMode bool) error {
 			return err
 		}
 		go state.handleConn(conn)
+	}
+}
+
+// logf writes a lifecycle line into the in-memory buffer shown on the
+// Logs page and mirrors it to stderr so the TUI capture (and journalctl
+// in service mode) sees the same line.
+func (s *helperState) logf(format string, args ...any) {
+	line := fmt.Sprintf(format, args...)
+	if s.logBuf != nil {
+		fmt.Fprintln(s.logBuf, line)
+	}
+	fmt.Fprintln(os.Stderr, line)
+}
+
+// syncProgressLogger periodically records sync progress until stopped.
+func (s *helperState) syncProgressLogger(stop <-chan struct{}) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	syncedAnnounced := false
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			s.mu.RLock()
+			if !s.running || s.chain == nil {
+				s.mu.RUnlock()
+				return
+			}
+			height := s.chain.Get_Height()
+			topo := s.chain.Load_TOPO_HEIGHT()
+			peerHeight, _ := p2p.Best_Peer_Height()
+			s.mu.RUnlock()
+			if peerHeight <= 0 || height <= 0 {
+				s.logf("daemon waiting for peers height=%d peers=%d", height, p2p.Peer_Count())
+				continue
+			}
+			progress := syncProgressRatio(height, peerHeight)
+			if height >= peerHeight {
+				if !syncedAnnounced {
+					s.logf("daemon synced height=%d topo=%d", height, topo)
+					syncedAnnounced = true
+				}
+				continue
+			}
+			syncedAnnounced = false
+			s.logf("syncing height=%d peer=%d (%.1f%%)", height, peerHeight, progress)
+		}
 	}
 }
 
@@ -154,9 +203,13 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 		dataDir = globals.GetDataDirectory()
 	}
 	fastsync := settings.FastSync && !dataDirHasData(dataDir)
+	s.logf("daemon starting network=%s data-dir=%s rpc=%s p2p=%s getwork=%s fastsync=%v debug=%v",
+		settings.Network, dataDir, rpcBind, p2pBind, getworkBind, fastsync, settings.Debug)
 
 	params := map[string]interface{}{
 		"--testnet":            testnet,
+		"--console-log-level":  settings.ConsoleLogLevel,
+		"--file-log-level":     settings.FileLogLevel,
 		"--debug":              settings.Debug,
 		"--data-dir":           dataDir,
 		"--rpc-bind":           rpcBind,
@@ -186,16 +239,21 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 
 	daemon, err := derodpkg.NewDaemon(params)
 	if err != nil {
+		s.logf("daemon start failed: %v", err)
 		return fmt.Errorf("daemon create failed: %w", err)
 	}
 	os.Args = []string{"derod"}
 	if err := daemon.Initialize(); err != nil {
+		s.logf("daemon start failed: %v", err)
 		return fmt.Errorf("daemon initialize failed: %w", err)
 	}
+	s.logf("derod initialized")
 	if err := daemon.Start(); err != nil {
+		s.logf("daemon start failed: %v", err)
 		return fmt.Errorf("daemon start failed: %w", err)
 	}
 	chain := daemon.Chain()
+	s.logf("derod started height=%d", chain.Get_Height())
 
 	s.daemon = daemon
 	s.chain = chain
@@ -205,6 +263,10 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 	s.settings.GetWorkBind = getworkBind
 	s.settings.DataDir = dataDir
 	s.running = true
+	if s.stopSyncLog == nil {
+		s.stopSyncLog = make(chan struct{})
+		go s.syncProgressLogger(s.stopSyncLog)
+	}
 	return nil
 }
 
@@ -214,18 +276,25 @@ func (s *helperState) stop() error {
 	if !s.running {
 		return nil
 	}
+	s.logf("daemon stopping")
 	if s.miner != nil {
 		s.miner.Stop()
 		s.miner = nil
 	}
 	if s.daemon != nil {
 		if err := s.daemon.Stop(); err != nil {
+			s.logf("daemon stop failed: %v", err)
 			return err
 		}
 		s.daemon = nil
 	}
 	s.chain = nil
 	s.running = false
+	if s.stopSyncLog != nil {
+		close(s.stopSyncLog)
+		s.stopSyncLog = nil
+	}
+	s.logf("daemon stopped")
 	return nil
 }
 
@@ -248,9 +317,10 @@ func (s *helperState) status() (Snapshot, wallet.DaemonInfo, []string) {
 		TopoHeight:      topoHeight,
 		IsOnline:        true,
 		IsHealthy:       true,
-		IsSynced:        peerHeight > 0 && height > 0 && height >= peerHeight,
-		IsSyncing:       peerHeight > 0 && height > 0 && height < peerHeight,
-		IsBootstrapping: height > 0 && topoHeight != height,
+		IsSynced:              peerHeight > 0 && height > 0 && height >= peerHeight,
+		IsSyncing:             peerHeight > 0 && height > 0 && height < peerHeight,
+		IsBootstrapping:       peerHeight > 0 && height > 0 && topoHeight != height,
+		IsFinalizingBootstrap: peerHeight > 0 && height > 0 && topoHeight > 0 && topoHeight < height && height >= peerHeight,
 		PeerHeight:      peerHeight,
 		SyncProgress:    syncProgressRatio(height, peerHeight),
 		Difficulty:      difficulty,
