@@ -204,7 +204,7 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 	}
 	fastsync := settings.FastSync && !dataDirHasData(dataDir, settings.Network)
 	s.logf("daemon starting network=%s data-dir=%s rpc=%s p2p=%s getwork=%s fastsync=%v prune=%s debug=%v",
-		settings.Network, dataDir, rpcBind, p2pBind, getworkBind, fastsync, pruneLabel(settings), settings.Debug)
+		settings.Network, dataDir, rpcBind, p2pBind, getworkBind, fastsync, pruneLabel(settings, dataDirHasData(dataDir, settings.Network)), settings.Debug)
 
 	params := map[string]interface{}{
 		"--testnet":            testnet,
@@ -220,7 +220,7 @@ func (s *helperState) start(settings appconfig.DaemonSettings) (err error) {
 		"--sync-node":          settings.SyncNode,
 		"--offline":            false,
 		"--node-tag":           settings.NodeTag,
-		"--prune-history":      pruneFlag(settings),
+		"--prune-history":      pruneFlag(settings, dataDirHasData(dataDir, settings.Network)),
 		"--min-peers":          settings.MinPeers,
 		"--max-peers":          settings.MaxPeers,
 		"--add-priority-node":  append([]string(nil), settings.PriorityNodes...),
@@ -406,19 +406,27 @@ func (s *helperState) minerStatus() helperMinerStatus {
 }
 
 // pruneFlag returns the --prune-history value for derod, or nil when the
-// Full profile is selected (derod keeps the entire history).
-func pruneFlag(settings appconfig.DaemonSettings) interface{} {
-	if settings.IsPruned() {
-		return strings.TrimSpace(settings.PruneHistory)
+// Full profile is selected or the chain is too young to prune (fewer than
+// 50 blocks of history). In the deferred case a later restart prunes once
+// enough history exists.
+func pruneFlag(settings appconfig.DaemonSettings, chainDataExists bool) interface{} {
+	if !settings.IsPruned() {
+		return nil
 	}
-	return nil
+	if !chainDataExists {
+		return nil // fresh chain: defer pruning until a later restart
+	}
+	return strings.TrimSpace(settings.PruneHistory)
 }
 
-func pruneLabel(settings appconfig.DaemonSettings) string {
-	if settings.IsPruned() {
-		return appconfig.DescribePrune(settings.PruneHistory)
+func pruneLabel(settings appconfig.DaemonSettings, chainDataExists bool) string {
+	if !settings.IsPruned() {
+		return "full"
 	}
-	return "full"
+	if !chainDataExists {
+		return "deferred"
+	}
+	return appconfig.DescribePrune(settings.PruneHistory)
 }
 
 func normalizedHelperBinds(settings appconfig.DaemonSettings) (string, string, string) {

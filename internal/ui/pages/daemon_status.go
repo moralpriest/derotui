@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"image/color"
 	"strings"
+
+	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -211,6 +213,10 @@ func (d DaemonStatusModel) View() string {
 	rows := []string{
 		sectionHeader("Status", styles.ColorSuccess),
 		row("State:", d.renderStateLine()),
+	}
+	if d.Snapshot.Running && d.Snapshot.BlockHeight > 0 && d.Snapshot.BlockHeight < 50 && config.GetDaemonSettings().IsPruned() {
+		rows = append(rows, row("Prune:", styles.WarningStyle.Render(fmt.Sprintf(
+			"deferred until height 50 (now %d) — restart after sync", d.Snapshot.BlockHeight))))
 	}
 	if d.Snapshot.Version != "" {
 		rows = append(rows, row("Version:", styles.TextStyle.Render(d.Snapshot.Version)))

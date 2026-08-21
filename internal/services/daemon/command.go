@@ -46,7 +46,7 @@ func BuildArgs(settings config.DaemonSettings) []string {
 	appendKV("--log-dir", settings.LogDir)
 	appendKV("--clog-level", settings.ConsoleLogLevel)
 	appendKV("--flog-level", settings.FileLogLevel)
-	if ph := strings.TrimSpace(settings.PruneHistory); ph != "" && ph != "0" {
+	if ph := strings.TrimSpace(settings.PruneHistory); ph != "" && ph != "0" && dataDirHasData(settings.DataDir, settings.Network) {
 		appendKV("--prune-history", ph)
 	}
 	for _, node := range settings.PriorityNodes {
