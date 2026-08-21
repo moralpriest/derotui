@@ -256,7 +256,7 @@ func (d DaemonStatusModel) View() string {
 	}
 
 	rows = append(rows, "", sectionHeader("Configuration", styles.ColorAccent))
-	if strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded") {
+	if true { // always embedded, external removed
 		rows = append(rows,
 			row("Mode:", styles.SuccessStyle.Render("Embedded Helper")),
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),

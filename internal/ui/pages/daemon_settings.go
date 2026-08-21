@@ -136,7 +136,7 @@ func (d DaemonSettingsModel) rows() []daemonSettingRow {
 		{field: daemonFieldNetwork, label: "Network", value: d.displayNetwork()},
 		{field: daemonFieldDataDir, label: "Data Directory", value: d.display(d.Settings.DataDir)},
 		{field: daemonFieldFastSync, label: "Fast Sync", value: fmt.Sprintf("%t", d.Settings.FastSync)},
-		{field: daemonFieldIntegrator, label: "Integrator Address", value: d.display(d.Settings.IntegratorAddress)},
+		{field: daemonFieldIntegrator, label: "Integrator Address", value: truncateMiddle(d.display(d.Settings.IntegratorAddress), 32)},
 		{field: daemonFieldNodeTag, label: "Node Tag", value: d.displayNodeTag()},
 		{field: daemonFieldRPCBind, label: "RPC Bind", value: d.display(d.Settings.RPCBind)},
 		{field: daemonFieldP2PBind, label: "P2P Bind", value: d.display(d.Settings.P2PBind)},
@@ -299,7 +299,7 @@ func (d DaemonSettingsModel) displayNodeTag() string {
 }
 
 func (d DaemonSettingsModel) footerText() string {
-	return "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back • Embedded mode manages derod in-process"
+	return "Enter Edit/Toggle • [W] Use wallet address • [S] Save • Esc Back"
 }
 
 func (d DaemonSettingsModel) isExternalMode() bool {

@@ -156,6 +156,16 @@ func (m MinerModel) Update(msg tea.Msg) (MinerModel, tea.Cmd) {
 }
 
 func (m MinerModel) View() string {
+	pickaxe := "⛏️"
+	if m.Running {
+		if m.spinnerFrame%2 == 0 {
+			pickaxe = styles.SuccessStyle.Render("⛏️")
+		} else {
+			pickaxe = styles.WarningStyle.Render("⛏️")
+		}
+	} else {
+		pickaxe = styles.MutedStyle.Render("⛏️")
+	}
 	deroLogo := styles.Logo()
 	if !m.Running {
 		deroLogo = lipgloss.NewStyle().Faint(true).Render(deroLogo)
@@ -163,7 +173,7 @@ func (m MinerModel) View() string {
 	var title string
 	if m.Running {
 		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[m.spinnerFrame%10]
-		title = styles.SuccessStyle.Render("Mining " + spinner)
+		title = pickaxe + " " + styles.SuccessStyle.Render("Mining " + spinner)
 	} else {
 		title = styles.MutedStyle.Render("Stopped")
 	}
@@ -307,9 +317,19 @@ func (m *MinerModel) ResetActions() {
 }
 
 func (m MinerModel) renderStatus() string {
+	pickaxe := "⛏️"
+	if m.Running {
+		if m.spinnerFrame%2 == 0 {
+			pickaxe = styles.SuccessStyle.Render("⛏️")
+		} else {
+			pickaxe = styles.WarningStyle.Render("⛏️")
+		}
+	} else {
+		pickaxe = styles.MutedStyle.Render("⛏️")
+	}
 	if m.Running {
 		spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}[m.spinnerFrame%10]
-		return styles.SuccessStyle.Render(spinner + " Mining")
+		return styles.SuccessStyle.Render(pickaxe + " " + spinner + " Mining")
 	}
 	return styles.WarningStyle.Render("Stopped")
 }
