@@ -188,19 +188,22 @@ func normalizeDaemonSettings(settings DaemonSettings) DaemonSettings {
 
 // DefaultDaemonDownloadSource returns the official derod release source.
 // PrunePresets are user-friendly prune-history choices, low space to high.
-// Estimated size assumes the DERO average block size of ~2 KB.
+// Estimated size assumes a pruned store overhead of ~40 KB per block
+// (raw block plus balances/topo bookkeeping), so numbers land close to
+// real on-disk sizes observed on synced nodes.
 var PrunePresets = []struct {
 	Blocks string
 	Label  string
 }{
 	{"500", "500 blocks (~1 MB)"},
-	{"5000", "5,000 blocks (~10 MB)"},
-	{"50000", "50,000 blocks (~100 MB)"},
-	{"500000", "500,000 blocks (~1 GB)"},
+	{"50000", "50,000 blocks (~2 GB)"},
+	{"250000", "250,000 blocks (~10 GB)"},
+	{"500000", "500,000 blocks (~20 GB)"},
+	{"1250000", "1,250,000 blocks (~50 GB)"},
 }
 
 // DefaultPruneHistory is the preset used when switching to the Pruned profile.
-const DefaultPruneHistory = "5000"
+const DefaultPruneHistory = "50000"
 
 // IsPruned reports whether the settings select the Pruned sync profile.
 func (s DaemonSettings) IsPruned() bool {

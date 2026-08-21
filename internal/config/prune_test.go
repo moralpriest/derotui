@@ -41,8 +41,11 @@ func TestDescribePrune(t *testing.T) {
 	if DescribePrune("") != "" || DescribePrune("0") != "" {
 		t.Fatal("empty/0 must describe as empty (Full)")
 	}
-	if got := DescribePrune("5000"); got != PrunePresets[1].Label {
+	if got := DescribePrune(PrunePresets[1].Blocks); got != PrunePresets[1].Label {
 		t.Fatalf("preset label mismatch: %q", got)
+	}
+	if got := DescribePrune("5000"); got != "5000 blocks" {
+		t.Fatalf("legacy value should render as custom: %q", got)
 	}
 	if got := DescribePrune("123456"); got != "123456 blocks" {
 		t.Fatalf("custom value label mismatch: %q", got)
