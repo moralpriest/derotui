@@ -262,7 +262,7 @@ func (d DaemonStatusModel) View() string {
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
 			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
 			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
-			row("Integrator:", truncatePlain(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
+			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
 		)
 	} else {
 		rows = append(rows,
@@ -270,7 +270,7 @@ func (d DaemonStatusModel) View() string {
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
 			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
 			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
-			row("Integrator:", truncatePlain(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
+			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), contentWidth-labelWidth-1)),
 		)
 	}
 
@@ -317,7 +317,7 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 		rows = append(rows, val("Node Tag:", plan.NodeTag))
 	}
 	if strings.TrimSpace(plan.IntegratorAddress) != "" {
-		rows = append(rows, val("Integrator:", plan.IntegratorAddress))
+		rows = append(rows, styles.MutedStyle.Render(padLabelText("Integrator:")) + styles.TextStyle.Render(truncateMiddle(plan.IntegratorAddress, daemonStatusContentWidth-daemonStatusLabelWidth-1)))
 	}
 	if strings.TrimSpace(plan.Network) != "" {
 		rows = append(rows, val("Network:", plan.Network))
@@ -546,6 +546,7 @@ func (d DaemonStatusModel) fallback(v string) string {
 	}
 	return v
 }
+
 
 func formatUptime(seconds uint64) string {
 	days := seconds / 86400
