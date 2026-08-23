@@ -314,6 +314,9 @@ func runHeadlessEmbeddedDaemon(opts ui.CLIOptions) error {
 		select {}
 	}
 	embedded := daemonservice.NewEmbeddedDaemon(daemonservice.NewLogBuffer(1000))
+	if config.ConvertPruneKeepLastToCut(&settings, 0) && settings.IsPruned() {
+		fmt.Println("pruning deferred: chain too young; starting without --prune-history")
+	}
 	if err := embedded.Start(settings); err != nil {
 		return err
 	}

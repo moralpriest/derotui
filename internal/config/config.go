@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -209,6 +210,21 @@ const DefaultPruneHistory = "50000"
 func (s DaemonSettings) IsPruned() bool {
 	v := strings.TrimSpace(s.PruneHistory)
 	return v != "" && v != "0"
+}
+
+func ConvertPruneKeepLastToCut(settings *DaemonSettings, topo int64) bool {
+	if settings == nil || !settings.IsPruned() {
+		return false
+	}
+	keepN, err := strconv.ParseInt(strings.TrimSpace(settings.PruneHistory), 10, 64)
+	if err != nil || keepN <= 50 {
+		return true
+	}
+	if topo <= keepN+50 {
+		return true
+	}
+	settings.PruneHistory = strconv.FormatInt(topo-keepN, 10)
+	return false
 }
 
 // NextPrunePreset cycles to the next preset after current (wrapping).

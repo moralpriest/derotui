@@ -393,23 +393,15 @@ func (m *Model) daemonManagerStatusCmd() tea.Cmd {
 // keeps roughly the last N blocks. Returns true when pruning must be
 // deferred this boot (unknown/too-young chain).
 func (m *Model) applyPruneConversion(settings *config.DaemonSettings) bool {
-	if !settings.IsPruned() {
-		return false
+	keep := strings.TrimSpace(settings.PruneHistory)
+	deferred := config.ConvertPruneKeepLastToCut(settings, m.daemonStatus.Snapshot.TopoHeight)
+	if !deferred && settings.PruneHistory != keep {
+		derolog.Info("daemon", "prune.convert", "converted keep-last to absolute cut",
+			"keep_blocks", keep,
+			"topo", fmt.Sprintf("%d", m.daemonStatus.Snapshot.TopoHeight),
+			"cut", settings.PruneHistory)
 	}
-	keepN, err := strconv.ParseInt(strings.TrimSpace(settings.PruneHistory), 10, 64)
-	if err != nil || keepN <= 50 {
-		return true
-	}
-	topo := m.daemonStatus.Snapshot.TopoHeight
-	if topo <= keepN+50 {
-		return true
-	}
-	settings.PruneHistory = strconv.FormatInt(topo-keepN, 10)
-	derolog.Info("daemon", "prune.convert", "converted keep-last to absolute cut",
-		"keep_blocks", strconv.FormatInt(keepN, 10),
-		"topo", strconv.FormatInt(topo, 10),
-		"cut", settings.PruneHistory)
-	return false
+	return deferred
 }
 
 // applyPruneRestartCmd restarts the embedded helper once so the deferred
@@ -490,7 +482,7 @@ func (m *Model) startLocalDaemonCmd() tea.Cmd {
 				derolog.Info("daemon", "prune.deferred", "chain too young; starting without --prune-history")
 			}
 			if err := m.embeddedDaemon.Start(settings); err != nil {
-				return daemonManagerMsg{err: err.Error()}
+				return daemonManagerMsg{err: err.Error(), source: "Embedded"}
 			}
 			statusSnapshot, info, logs := m.embeddedDaemon.GetStatus()
 			snap := daemonservice.Snapshot{
@@ -571,11 +563,17 @@ func (m *Model) restartLocalDaemonCmd() tea.Cmd {
 	settings := config.GetDaemonSettings()
 	return func() tea.Msg {
 		if m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() {
+			topo := m.daemonStatus.Snapshot.TopoHeight
 			if err := m.embeddedDaemon.Stop(); err != nil {
 				return daemonManagerMsg{err: err.Error()}
 			}
+			m.daemonStatus.Snapshot.TopoHeight = topo
+			if m.applyPruneConversion(&settings) {
+				m.pendingPrune = true
+				derolog.Info("daemon", "prune.deferred", "chain too young; restarting without --prune-history")
+			}
 			if err := m.embeddedDaemon.Start(settings); err != nil {
-				return daemonManagerMsg{err: err.Error()}
+				return daemonManagerMsg{err: err.Error(), source: "Embedded"}
 			}
 			statusSnapshot, info, logs := m.embeddedDaemon.GetStatus()
 			snap := daemonservice.Snapshot{

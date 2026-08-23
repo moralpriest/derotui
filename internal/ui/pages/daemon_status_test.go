@@ -320,3 +320,15 @@ func TestDaemonStatusShowsApplyingPrune(t *testing.T) {
 		t.Fatalf("expected applying prune row, got:\n%s", view)
 	}
 }
+
+func TestDaemonStatusShowsBuiltInBinary(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Source: "Embedded"})
+	view := stripANSI(d.View())
+	if !strings.Contains(view, "Built-in") {
+		t.Fatalf("expected Built-in binary row, got:\n%s", view)
+	}
+	if strings.Contains(view, ".derotui/derod") {
+		t.Fatalf("embedded view must not show derod path, got:\n%s", view)
+	}
+}

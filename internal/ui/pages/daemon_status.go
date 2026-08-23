@@ -267,6 +267,7 @@ func (d DaemonStatusModel) View() string {
 	if strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded") {
 		rows = append(rows,
 			row("Mode:", styles.SuccessStyle.Render("Embedded")),
+			row("Binary:", "Built-in"),
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
 			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
 			row("P2P:", truncatePlain(d.fallback(d.Snapshot.P2PBind), contentWidth-labelWidth-1)),
