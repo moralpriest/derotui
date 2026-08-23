@@ -11,7 +11,7 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/civilware/epoch v0.0.0-20241002060739-1ed2fc6f74cb
 	github.com/creachadair/jrpc2 v0.36.0
-	github.com/deroproject/derohe v0.0.0-20260527071132-5cd042e8f541
+	github.com/deroproject/derohe v0.0.0-20260821221519-e7cf5eb2c1f5
 	github.com/gorilla/websocket v1.5.3
 	github.com/moralpriest/derodpkg v0.0.0-20260819044301-254e364b31c0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
@@ -81,7 +81,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260817052654-390295b40c0b
+replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260821221519-e7cf5eb2c1f5
 
 replace github.com/civilware/epoch => github.com/moralpriest/epoch v0.0.0-20260812013238-2104b271e52a
 

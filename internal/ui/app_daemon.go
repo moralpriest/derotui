@@ -85,13 +85,13 @@ func (m *Model) minerAddress() string {
 func (m *Model) minerDaemonNetwork() string {
 	if m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() {
 		if status, _, _ := m.embeddedDaemon.GetStatus(); status.Network != "" {
-			return status.Network
+			return strings.ToLower(status.Network)
 		}
 	}
 	// Fall back to sticky/configured daemon settings
 	settings := config.GetDaemonSettings()
 	if settings.Network != "" {
-		return settings.Network
+		return strings.ToLower(settings.Network)
 	}
 	if m.Opts.Simulator {
 		return string(config.NetworkSimulator)
@@ -157,12 +157,12 @@ func splitHostPort(addr string) (string, string) {
 func (m *Model) embeddedDaemonNetwork() string {
 	if m.embeddedDaemon != nil {
 		if status, _, _ := m.embeddedDaemon.GetStatus(); status.Network != "" {
-			return status.Network
+			return strings.ToLower(status.Network)
 		}
 	}
 	settings := config.GetDaemonSettings()
 	if settings.Network != "" {
-		return settings.Network
+		return strings.ToLower(settings.Network)
 	}
 	if m.Opts.Simulator {
 		return string(config.NetworkSimulator)
