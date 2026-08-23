@@ -232,6 +232,9 @@ type Model struct {
 	rpcMiner           minerservice.RPCBackend
 	daemonManagedSince time.Time
 	lastEmbeddedError  string
+	pendingPrune       bool
+	pruneAppliedOnce   bool
+	applyingPrune      bool
 }
 
 type pendingOutgoingTx struct {
@@ -570,6 +573,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case tickMsg:
+		if m.pendingPrune && !m.pruneAppliedOnce && !m.applyingPrune &&
+			m.embeddedDaemon != nil && m.embeddedDaemon.IsRunning() &&
+			m.daemonStatus.Snapshot.Running && m.daemonStatus.Snapshot.IsSynced &&
+			m.daemonStatus.InstallPlan == nil && !m.daemonStatus.ConfirmingUninstall &&
+			config.GetDaemonSettings().IsPruned() {
+			ms := m.embeddedDaemon.MinerStatus()
+			m.pruneAppliedOnce = true
+			m.applyingPrune = true
+			derolog.Info("daemon", "prune.auto_apply", "sync complete; restarting embedded daemon to apply pruning")
+			cmds = append(cmds, m.applyPruneRestartCmd(ms.Running, ms.Address, ms.Threads))
+		}
 		if m.debugEnabled {
 			m.updateDashboardLogEntries()
 		}
@@ -1527,6 +1541,11 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		}
 		if m.daemonSettings.Saved() {
 			settings := m.daemonSettings.Settings
+			if !settings.IsPruned() {
+				m.pendingPrune = false
+				m.pruneAppliedOnce = false
+				m.applyingPrune = false
+			}
 			if err := config.SetDaemonSettings(settings); err != nil {
 				m.daemonSettings.SetError("Failed to save settings: " + err.Error())
 			} else {

@@ -388,6 +388,76 @@ func (m *Model) daemonManagerStatusCmd() tea.Cmd {
 	}
 }
 
+// applyPruneConversion rewrites settings.PruneHistory into the absolute cut
+// height derod expects (delete everything below cut) so the embedded daemon
+// keeps roughly the last N blocks. Returns true when pruning must be
+// deferred this boot (unknown/too-young chain).
+func (m *Model) applyPruneConversion(settings *config.DaemonSettings) bool {
+	if !settings.IsPruned() {
+		return false
+	}
+	keepN, err := strconv.ParseInt(strings.TrimSpace(settings.PruneHistory), 10, 64)
+	if err != nil || keepN <= 50 {
+		return true
+	}
+	topo := m.daemonStatus.Snapshot.TopoHeight
+	if topo <= keepN+50 {
+		return true
+	}
+	settings.PruneHistory = strconv.FormatInt(topo-keepN, 10)
+	derolog.Info("daemon", "prune.convert", "converted keep-last to absolute cut",
+		"keep_blocks", strconv.FormatInt(keepN, 10),
+		"topo", strconv.FormatInt(topo, 10),
+		"cut", settings.PruneHistory)
+	return false
+}
+
+// applyPruneRestartCmd restarts the embedded helper once so the deferred
+// prune executes at Initialize time. Miner is paused/resumed around it.
+func (m *Model) applyPruneRestartCmd(wasMining bool, minerAddr string, minerThreads int) tea.Cmd {
+	return func() tea.Msg {
+		derolog.Info("daemon", "prune.restart", "restarting embedded daemon to apply pruning")
+		if wasMining {
+			_ = m.embeddedDaemon.StopMiner()
+		}
+		if err := m.embeddedDaemon.Stop(); err != nil {
+			derolog.Error("daemon", "prune.restart_stop_failed", err.Error())
+			return daemonManagerMsg{err: err.Error()}
+		}
+		settings := config.GetDaemonSettings()
+		if m.applyPruneConversion(&settings) || !settings.IsPruned() {
+			derolog.Warn("daemon", "prune.restart_deferred", "cut point still unknown")
+			m.applyingPrune = false
+			m.pruneAppliedOnce = false
+			return daemonManagerMsg{err: "pruning deferred again: chain not tall enough yet; start manually once synced"}
+		}
+		if err := m.embeddedDaemon.Start(settings); err != nil {
+			derolog.Error("daemon", "prune.restart_start_failed", err.Error())
+			m.applyingPrune = false
+			m.pruneAppliedOnce = false
+			return daemonManagerMsg{err: err.Error()}
+		}
+		m.pendingPrune = false
+		statusSnapshot, info, logs := m.embeddedDaemon.GetStatus()
+		snap := daemonservice.Snapshot{
+			Running: statusSnapshot.Running,
+			Managed: true,
+			RPCBind: statusSnapshot.RPCBind,
+			P2PBind: statusSnapshot.P2PBind,
+			DataDir: statusSnapshot.DataDir,
+			Network: statusSnapshot.Network,
+		}
+		if wasMining {
+			if err := m.embeddedDaemon.StartMiner(minerAddr, minerThreads); err != nil {
+				derolog.Error("daemon", "prune.miner_resume_failed", err.Error())
+			}
+		}
+		derolog.Info("daemon", "prune.applied", "embedded daemon restarted with pruning active",
+			"cut", settings.PruneHistory)
+		return daemonManagerMsg{snapshot: snap, logs: logs, info: info, source: "Embedded"}
+	}
+}
+
 func (m *Model) startLocalDaemonCmd() tea.Cmd {
 	settings := config.GetDaemonSettings()
 	return func() tea.Msg {
@@ -415,6 +485,10 @@ func (m *Model) startLocalDaemonCmd() tea.Cmd {
 		}
 
 		if settings.Mode == "embedded" || settings.Mode == "" {
+			if m.applyPruneConversion(&settings) {
+				m.pendingPrune = true
+				derolog.Info("daemon", "prune.deferred", "chain too young; starting without --prune-history")
+			}
 			if err := m.embeddedDaemon.Start(settings); err != nil {
 				return daemonManagerMsg{err: err.Error()}
 			}
@@ -564,7 +638,6 @@ func (m *Model) restartLocalDaemonCmd() tea.Cmd {
 
 const daemonGracePeriod = 30 * time.Second
 
-
 func (m *Model) fillIntegratorFallback() {
 	addr := strings.TrimSpace(m.daemonStatus.Snapshot.IntegratorAddress)
 	if addr != "" {
@@ -651,7 +724,7 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		RPCBind:               rpcBind,
 		P2PBind:               p2pBind,
 		GetWorkBind:           msg.snapshot.GetWorkBind,
-		IntegratorAddress:    settings.IntegratorAddress,
+		IntegratorAddress:     settings.IntegratorAddress,
 		LaunchArgs:            msg.snapshot.LaunchArgs,
 		LastError:             firstNonEmpty(msg.err, msg.snapshot.LastError, m.lastEmbeddedError),
 		IsOnline:              info.IsOnline,
@@ -675,10 +748,15 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		TxPoolSize:            info.TxPoolSize,
 		Hashrate1hr:           info.Hashrate1hr,
 		Hashrate1d:            info.Hashrate1d,
+		PrunePending:          m.pendingPrune,
+		ApplyingPrune:         m.applyingPrune,
 	}
 
 	m.daemonStatus.SetSnapshot(baseline)
 	m.fillIntegratorFallback()
+	if !m.pendingPrune {
+		m.applyingPrune = false
+	}
 	derolog.Debug("daemon", "status.refresh", "snapshot updated",
 		"source", source, "running", fmt.Sprintf("%t", baseline.Running),
 		"height", fmt.Sprintf("%d", baseline.BlockHeight), "peer_height", fmt.Sprintf("%d", baseline.PeerHeight))
@@ -765,15 +843,15 @@ func firstNonEmpty(values ...string) string {
 func snapshotFromExternal(settings config.DaemonSettings, address string, info wallet.DaemonInfo) daemonservice.Snapshot {
 	pid := daemonservice.FindDerodPID(address)
 	snap := daemonservice.Snapshot{
-		Running:            info.IsOnline,
-		Managed:            false,
-		PID:                pid,
-		Network:            strings.ToLower(info.Network),
-		BinaryPath:         settings.BinaryPath,
-		DataDir:            settings.DataDir,
-		RPCBind:            address,
-		P2PBind:            settings.P2PBind,
-		GetWorkBind:        settings.GetWorkBind,
+		Running:     info.IsOnline,
+		Managed:     false,
+		PID:         pid,
+		Network:     strings.ToLower(info.Network),
+		BinaryPath:  settings.BinaryPath,
+		DataDir:     settings.DataDir,
+		RPCBind:     address,
+		P2PBind:     settings.P2PBind,
+		GetWorkBind: settings.GetWorkBind,
 	}
 	// Reflect the actual running process: read its real command line so the
 	// config/logs shown match the external node, not the app's saved settings.
@@ -926,16 +1004,16 @@ func snapshotFromSystemd(settings config.DaemonSettings, service systemdservice.
 		}
 	}
 	snap := daemonservice.Snapshot{
-		Running:            service.Active,
-		Managed:            false,
-		PID:                daemonservice.FindPIDByAddress(address),
-		Network:            network,
-		BinaryPath:         settings.BinaryPath,
-		DataDir:            settings.DataDir,
-		RPCBind:            address,
-		P2PBind:            settings.P2PBind,
-		GetWorkBind:        settings.GetWorkBind,
-		LastExit:           serviceState,
+		Running:     service.Active,
+		Managed:     false,
+		PID:         daemonservice.FindPIDByAddress(address),
+		Network:     network,
+		BinaryPath:  settings.BinaryPath,
+		DataDir:     settings.DataDir,
+		RPCBind:     address,
+		P2PBind:     settings.P2PBind,
+		GetWorkBind: settings.GetWorkBind,
+		LastExit:    serviceState,
 	}
 	if args := argsFromExecStart(service.ExecStart); len(args) > 0 {
 		snap.LaunchArgs = args

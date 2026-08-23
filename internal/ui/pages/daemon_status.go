@@ -7,7 +7,6 @@ import (
 	"image/color"
 	"strings"
 
-	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"time"
 
 	"charm.land/bubbles/v2/key"
@@ -64,6 +63,8 @@ type DaemonStatusSnapshot struct {
 	TxPoolSize            uint64
 	Hashrate1hr           uint64
 	Hashrate1d            uint64
+	PrunePending          bool
+	ApplyingPrune         bool
 }
 
 type DaemonStatusModel struct {
@@ -214,9 +215,10 @@ func (d DaemonStatusModel) View() string {
 		sectionHeader("Status", styles.ColorSuccess),
 		row("State:", d.renderStateLine()),
 	}
-	if d.Snapshot.Running && d.Snapshot.BlockHeight > 0 && d.Snapshot.BlockHeight < 50 && config.GetDaemonSettings().IsPruned() {
-		rows = append(rows, row("Prune:", styles.WarningStyle.Render(fmt.Sprintf(
-			"deferred until height 50 (now %d) — restart after sync", d.Snapshot.BlockHeight))))
+	if d.Snapshot.ApplyingPrune {
+		rows = append(rows, row("Prune:", styles.WarningStyle.Render("Applying pruning…")))
+	} else if d.Snapshot.PrunePending && d.Snapshot.Running {
+		rows = append(rows, row("Prune:", styles.MutedStyle.Render("waiting for first sync — applies automatically")))
 	}
 	if d.Snapshot.Version != "" {
 		rows = append(rows, row("Version:", styles.TextStyle.Render(d.Snapshot.Version)))
@@ -323,7 +325,7 @@ func (d DaemonStatusModel) renderInstallPlan() []string {
 		rows = append(rows, val("Node Tag:", plan.NodeTag))
 	}
 	if strings.TrimSpace(plan.IntegratorAddress) != "" {
-		rows = append(rows, styles.MutedStyle.Render(padLabelText("Integrator:")) + styles.TextStyle.Render(truncateMiddle(plan.IntegratorAddress, 32)))
+		rows = append(rows, styles.MutedStyle.Render(padLabelText("Integrator:"))+styles.TextStyle.Render(truncateMiddle(plan.IntegratorAddress, 32)))
 	}
 	if strings.TrimSpace(plan.Network) != "" {
 		rows = append(rows, val("Network:", plan.Network))
@@ -549,7 +551,6 @@ func (d DaemonStatusModel) fallback(v string) string {
 	}
 	return v
 }
-
 
 func formatUptime(seconds uint64) string {
 	days := seconds / 86400

@@ -134,7 +134,6 @@ func TestDaemonStatusFooterShowsInstallForEmbedded(t *testing.T) {
 	}
 }
 
-
 // While an uninstall is awaiting confirmation, Y must request apply and the
 // normal page keys (start/stop/install...) must be inert.
 func TestDaemonStatusUninstallConfirmBlocksPageKeys(t *testing.T) {
@@ -301,5 +300,23 @@ func TestDaemonStatusSettleIgnoresActionKeys(t *testing.T) {
 	next2, _ := d2.Update(planPreviewKeys("s"))
 	if next2.WantStart() || next2.Cancelled() {
 		t.Fatal("s must be ignored while settling")
+	}
+}
+
+func TestDaemonStatusShowsPrunePending(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Running: true, PrunePending: true})
+	view := stripANSI(d.View())
+	if !strings.Contains(view, "waiting for first sync") {
+		t.Fatalf("expected pending prune row, got:\n%s", view)
+	}
+}
+
+func TestDaemonStatusShowsApplyingPrune(t *testing.T) {
+	d := NewDaemonStatus()
+	d.SetSnapshot(DaemonStatusSnapshot{Running: true, ApplyingPrune: true})
+	view := stripANSI(d.View())
+	if !strings.Contains(view, "Applying pruning") {
+		t.Fatalf("expected applying prune row, got:\n%s", view)
 	}
 }

@@ -347,3 +347,37 @@ func TestWalletDaemonRetryDoesNotForceDashboard(t *testing.T) {
 		t.Fatal("connecting indicator should be cleared after a failed retry")
 	}
 }
+
+func TestApplyPruneConversionDeferredWhenTopoUnknown(t *testing.T) {
+	m := Model{}
+	s := config.DaemonSettings{PruneHistory: "50000"}
+	if !m.applyPruneConversion(&s) {
+		t.Fatal("expected defer when topo is 0")
+	}
+	if s.PruneHistory != "50000" {
+		t.Fatalf("keep-last must stay unchanged when deferred, got %q", s.PruneHistory)
+	}
+}
+
+func TestApplyPruneConversionRewritesAbsoluteCut(t *testing.T) {
+	m := Model{}
+	m.daemonStatus.Snapshot.TopoHeight = 600000
+	s := config.DaemonSettings{PruneHistory: "50000"}
+	if m.applyPruneConversion(&s) {
+		t.Fatal("expected conversion, not defer")
+	}
+	if s.PruneHistory != "550000" {
+		t.Fatalf("cut = topo-keep = 550000, got %q", s.PruneHistory)
+	}
+}
+
+func TestApplyPruneConversionFullProfileNoOp(t *testing.T) {
+	m := Model{}
+	s := config.DaemonSettings{PruneHistory: ""}
+	if m.applyPruneConversion(&s) {
+		t.Fatal("full profile is not deferred")
+	}
+	if s.PruneHistory != "" {
+		t.Fatalf("full profile must stay empty, got %q", s.PruneHistory)
+	}
+}
