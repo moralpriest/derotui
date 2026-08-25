@@ -177,7 +177,8 @@ func (s *helperState) handleRequest(req helperRequest) helperResponse {
 		known := p2p.Peer_Count()
 		// known includes all; Peer_Count is total, direction gives incoming/outgoing
 		bh, bc, bs := p2p.GetSyncProgress()
-		return helperResponse{OK: true, Snapshot: snap, Info: daemonInfoMap(info), Logs: logs, RPCBind: snap.RPCBind, PeerHeight: peerHeight, SyncProgress: syncProgress, FinalizingBootstrap: finalizing, Miner: s.minerStatus(), IncomingPeers: incoming, OutgoingPeers: outgoing, KnownPeers: known, BootstrapHeight: bh, BootstrapChunk: bc, BootstrapStep: bs}
+		bp, _, _, _ := p2p.GetBootstrapProgress()
+		return helperResponse{OK: true, Snapshot: snap, Info: daemonInfoMap(info), Logs: logs, RPCBind: snap.RPCBind, PeerHeight: peerHeight, SyncProgress: syncProgress, FinalizingBootstrap: finalizing, Miner: s.minerStatus(), IncomingPeers: incoming, OutgoingPeers: outgoing, KnownPeers: known, BootstrapHeight: bh, BootstrapChunk: bc, BootstrapStep: bs, BootstrapProgress: bp}
 	case "miner_start":
 		if err := s.startMiner(req.Address, req.Threads); err != nil {
 			return helperResponse{OK: false, Error: err.Error()}
@@ -356,6 +357,7 @@ func (s *helperState) status() (Snapshot, wallet.DaemonInfo, []string) {
 		GetWorkBind: s.settings.GetWorkBind,
 		P2PBind:     s.settings.P2PBind,
 	}
+	snap.BootstrapProgress, _, _, _ = p2p.GetBootstrapProgress()
 	return snap, info, logs
 }
 

@@ -79,6 +79,7 @@ type DaemonStatusSnapshot struct {
 	TopoHeight            int64
 	PeerHeight            int64
 	SyncProgress          float64
+	BootstrapProgress     float64
 	Version               string
 	Difficulty            uint64
 	AvgBlockTime          float32
@@ -684,18 +685,23 @@ func (d DaemonStatusModel) renderProgressRow() string {
 	if width == 0 || width < 20 {
 		width = 40
 	}
-	pct := d.Snapshot.SyncProgress
-	if pct > 1 {
-		pct = pct / 100
+	var pct float64
+	if d.Snapshot.IsBootstrapping || d.Snapshot.IsFinalizingBootstrap {
+		pct = d.Snapshot.BootstrapProgress
+		if pct == 0 {
+			pct = 0.02
+		}
+	} else {
+		pct = d.Snapshot.SyncProgress
+		if pct > 1 {
+			pct = pct / 100
+		}
 	}
 	if pct < 0 {
 		pct = 0
 	}
 	if pct > 1 {
 		pct = 1
-	}
-	if pct == 0 {
-		pct = 0.05
 	}
 	// Clamp bar width to available viewport width minus label/padding
 	labelWidth := lipgloss.Width("Progress: ")

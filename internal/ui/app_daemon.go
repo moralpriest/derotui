@@ -313,6 +313,7 @@ func (m *Model) embeddedDaemonStatusCmd() tea.Cmd {
 			LastError:             statusSnapshot.LastError,
 			PeerHeight:            statusSnapshot.PeerHeight,
 			SyncProgress:          statusSnapshot.SyncProgress,
+			BootstrapProgress:     statusSnapshot.BootstrapProgress,
 			IsFinalizingBootstrap: statusSnapshot.IsFinalizingBootstrap,
 		}
 		return daemonManagerMsg{snapshot: snap, logs: logs, info: info, source: "Embedded"}
@@ -736,6 +737,7 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		TopoHeight:            info.TopoHeight,
 		PeerHeight:            info.PeerHeight,
 		SyncProgress:          info.SyncProgress,
+		BootstrapProgress:     msg.snapshot.BootstrapProgress,
 		Version:               info.Version,
 		Difficulty:            info.Difficulty,
 		AvgBlockTime:          info.AvgBlockTime,

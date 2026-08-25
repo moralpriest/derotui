@@ -25,5 +25,6 @@ type Snapshot struct {
 	// the UI derives state from a network reference height instead.
 	PeerHeight            int64
 	SyncProgress          float64
+	BootstrapProgress     float64
 	IsFinalizingBootstrap bool
 }
