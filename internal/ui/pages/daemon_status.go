@@ -468,22 +468,7 @@ func (d DaemonStatusModel) renderStateLine() string {
 }
 
 func (d DaemonStatusModel) renderRPCLine() string {
-	if d.Snapshot.IsOnline && d.Snapshot.IsHealthy {
-		if d.Snapshot.BlockHeight == 0 && d.Snapshot.PeerHeight == 0 && d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 {
-			return styles.WarningStyle.Render("No peers yet")
-		}
-		if d.Snapshot.IsFinalizingBootstrap {
-			return styles.WarningStyle.Render("Finalizing Bootstrap...")
-		}
-		if d.Snapshot.IsBootstrapping {
-			return styles.BootstrappingStyle.Render("Bootstrapping")
-		}
-		if d.Snapshot.IsSynced {
-			return styles.SuccessStyle.Render("Healthy")
-		}
-		return styles.WarningStyle.Render("Syncing")
-	}
-	return styles.ErrorStyle.Render("Unreachable")
+	return styles.TextStyle.Render(d.fallback(d.Snapshot.RPCBind))
 }
 
 func (d DaemonStatusModel) renderMetaLine() string {
