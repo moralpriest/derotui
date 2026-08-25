@@ -673,7 +673,7 @@ func renderDaemonStateLabel(daemon DaemonStatusInfo) string {
 			return styles.SuccessStyle.Render("● Synced")
 		}
 		if daemon.IsBootstrapping {
-			return styles.BootstrappingStyle.Render("● Bootstrapping " + formatSyncPct(daemon.SyncProgress))
+			return styles.BootstrappingStyle.Render("● Bootstrapping")
 		}
 		if daemon.IsSyncing {
 			return styles.WarningStyle.Render("● Syncing " + formatSyncPct(daemon.SyncProgress))

@@ -177,7 +177,19 @@ func (s *helperState) handleRequest(req helperRequest) helperResponse {
 		known := p2p.Peer_Count()
 		// known includes all; Peer_Count is total, direction gives incoming/outgoing
 		bh, bc, bs := p2p.GetSyncProgress()
-		bp, _, _, _ := p2p.GetBootstrapProgress()
+		bp, _, _, bstep := p2p.GetBootstrapProgress()
+		switch {
+		case bstep >= 2:
+			bp = 0.60 + 0.35*bp
+		default:
+			bp = 0.60 * bp
+		}
+		if finalizing && bp < 0.95 {
+			bp = 0.95
+		}
+		if bp > 0.99 {
+			bp = 0.99
+		}
 		return helperResponse{OK: true, Snapshot: snap, Info: daemonInfoMap(info), Logs: logs, RPCBind: snap.RPCBind, PeerHeight: peerHeight, SyncProgress: syncProgress, FinalizingBootstrap: finalizing, Miner: s.minerStatus(), IncomingPeers: incoming, OutgoingPeers: outgoing, KnownPeers: known, BootstrapHeight: bh, BootstrapChunk: bc, BootstrapStep: bs, BootstrapProgress: bp}
 	case "miner_start":
 		if err := s.startMiner(req.Address, req.Threads); err != nil {

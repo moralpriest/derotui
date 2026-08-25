@@ -45,7 +45,7 @@ func TestRenderDaemonStateLabel(t *testing.T) {
 		{
 			name:   "bootstrapping",
 			daemon: DaemonStatusInfo{IsOnline: true, IsHealthy: true, IsBootstrapping: true, SyncProgress: 0.05},
-			want:   "● Bootstrapping <0.1%",
+			want:   "● Bootstrapping",
 		},
 		{
 			name:   "online",
@@ -127,7 +127,7 @@ func TestRenderDaemonSummaryLine(t *testing.T) {
 		PeerHeight:      7_414_000,
 	}))
 
-	for _, want := range []string{"Network:", "Mainnet", "● Bootstrapping <0.1%", "Daemon:", "localhost:10102", "Height:", "532 / 7,414,000 (<0.1%)"} {
+	for _, want := range []string{"Network:", "Mainnet", "● Bootstrapping", "Daemon:", "localhost:10102", "Height:", "532 / 7,414,000 (<0.1%)"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("summary line missing %q in %q", want, line)
 		}
@@ -156,7 +156,7 @@ func TestRenderStateLine(t *testing.T) {
 				IsBootstrapping: true, SyncProgress: 12.5,
 				IncomingPeers: 1, OutgoingPeers: 1,
 			},
-			want: "Bootstrapping 12.5%",
+			want: "Bootstrapping",
 		},
 		{
 			name: "synced",

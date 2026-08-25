@@ -447,7 +447,7 @@ func (d DaemonStatusModel) renderStateLine() string {
 			return styles.WarningStyle.Render("Finalizing Bootstrap...")
 		}
 		if d.Snapshot.IsBootstrapping {
-			return styles.BootstrappingStyle.Render("Bootstrapping " + formatSyncPct(d.Snapshot.SyncProgress))
+			return styles.BootstrappingStyle.Render("Bootstrapping")
 		}
 
 		if d.Snapshot.BlockHeight == 0 && d.Snapshot.PeerHeight == 0 && d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 {
@@ -476,7 +476,7 @@ func (d DaemonStatusModel) renderRPCLine() string {
 			return styles.WarningStyle.Render("Finalizing Bootstrap...")
 		}
 		if d.Snapshot.IsBootstrapping {
-			return styles.BootstrappingStyle.Render("Bootstrapping " + formatSyncPct(d.Snapshot.SyncProgress))
+			return styles.BootstrappingStyle.Render("Bootstrapping")
 		}
 		if d.Snapshot.IsSynced {
 			return styles.SuccessStyle.Render("Healthy")
