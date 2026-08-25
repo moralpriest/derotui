@@ -676,8 +676,12 @@ func (d DashboardModel) View() string {
 		)
 	}
 
+	// Padding(0,1): the dashboard is displayed inside renderDashboard's outer
+	// frame, so the content here is 76 + 2 = 78 wide and the frame totals
+	// styles.Width (80). Padding(0,2) made the content 80 wide and the framed
+	// dashboard 82, overflowing an 80-column terminal.
 	return lipgloss.NewStyle().
-		Padding(0, 2).
+		Padding(0, 1).
 		Render(content)
 }
 

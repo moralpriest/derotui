@@ -5,6 +5,8 @@ package pages
 import (
 	"strings"
 	"testing"
+
+	"charm.land/lipgloss/v2"
 )
 
 func TestFormatSyncPct(t *testing.T) {
@@ -116,22 +118,51 @@ func TestRenderWelcomeHeight(t *testing.T) {
 }
 
 func TestRenderDaemonSummaryLine(t *testing.T) {
-	line := stripANSI(renderDaemonSummaryLine(DaemonStatusInfo{
-		IsOnline:        true,
-		IsHealthy:       true,
-		IsBootstrapping: true,
-		SyncProgress:    0.05,
-		Network:         "Mainnet",
-		Address:         "localhost:10102",
-		BlockHeight:     532,
-		PeerHeight:      7_414_000,
-	}))
+	t.Run("bootstrapping keeps address, compacts height", func(t *testing.T) {
+		line := stripANSI(renderDaemonSummaryLine(DaemonStatusInfo{
+			IsOnline:        true,
+			IsHealthy:       true,
+			IsBootstrapping: true,
+			SyncProgress:    0.05,
+			Network:         "Mainnet",
+			Address:         "localhost:10102",
+			BlockHeight:     532,
+			PeerHeight:      7_414_000,
+		}))
 
-	for _, want := range []string{"Network:", "Mainnet", "● Bootstrapping", "Daemon:", "localhost:10102", "Height:", "532 / 7,414,000 (<0.1%)"} {
-		if !strings.Contains(line, want) {
-			t.Errorf("summary line missing %q in %q", want, line)
+		// The densest state (verbose status + peer height) must not push the
+		// line past the welcome frame's inner width; the height compacts to the
+		// block number so the daemon address stays readable.
+		for _, want := range []string{"Network:", "Mainnet", "● Bootstrapping", "Daemon:", "localhost:10102", "Height:", "532"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("summary line missing %q in %q", want, line)
+			}
 		}
-	}
+		if lipgloss.Width(line) > welcomeFrameInnerWidth {
+			t.Errorf("summary line width %d exceeds %d: %q", lipgloss.Width(line), welcomeFrameInnerWidth, line)
+		}
+	})
+
+	t.Run("roomy state keeps full peer height", func(t *testing.T) {
+		line := stripANSI(renderDaemonSummaryLine(DaemonStatusInfo{
+			IsOnline:    true,
+			IsHealthy:   true,
+			IsSynced:    true,
+			Network:     "Mainnet",
+			Address:     "localhost",
+			BlockHeight: 532,
+			PeerHeight:  1_000,
+		}))
+
+		for _, want := range []string{"Network:", "Mainnet", "● Synced", "Daemon:", "localhost", "Height:", "532 / 1,000"} {
+			if !strings.Contains(line, want) {
+				t.Errorf("summary line missing %q in %q", want, line)
+			}
+		}
+		if lipgloss.Width(line) > welcomeFrameInnerWidth {
+			t.Errorf("summary line width %d exceeds %d: %q", lipgloss.Width(line), welcomeFrameInnerWidth, line)
+		}
+	})
 }
 
 func TestRenderStateLine(t *testing.T) {

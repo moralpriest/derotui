@@ -2158,12 +2158,20 @@ func (m Model) renderDashboard() string {
 	content := m.dashboard.View()
 	contentLines := strings.Split(content, "\n")
 
+	// The outer frame must fit the design width (styles.Width), so the content
+	// budget inside the frame is styles.Width - 2. Without this cap the frame
+	// came out 2 columns wider than the box on every other page (the dashboard
+	// View is padded to styles.Width before renderDashboard adds the borders),
+	// so in an 80-column terminal the right border wrapped/collided.
 	contentWidth := 0
 	for _, line := range contentLines {
 		lineWidth := lipgloss.Width(line)
 		if lineWidth > contentWidth {
 			contentWidth = lineWidth
 		}
+	}
+	if contentWidth > styles.Width-2 {
+		contentWidth = styles.Width - 2
 	}
 
 	versionStr := "v" + Version
@@ -2193,6 +2201,12 @@ func (m Model) renderDashboard() string {
 	framedLines := make([]string, 0, len(contentLines)+2)
 	framedLines = append(framedLines, topBorder)
 	for _, line := range contentLines {
+		// Overflow guard: a content line wider than the budget (e.g. a long
+		// flash message) would push the side border past the frame. Truncate it
+		// to the budget; ansi-aware truncation keeps colors intact.
+		if w := lipgloss.Width(line); w > contentWidth {
+			line = lipgloss.NewStyle().Inline(true).MaxWidth(contentWidth).Render(line)
+		}
 		pad := contentWidth - lipgloss.Width(line)
 		if pad > 0 {
 			line += strings.Repeat(" ", pad)

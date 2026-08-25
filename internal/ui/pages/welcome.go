@@ -18,6 +18,16 @@ var (
 	welcomeDownKeys = key.NewBinding(key.WithKeys("down", "ctrl+n"))
 )
 
+// Welcome frame dimensions. The frame is drawn by hand (box + version in the
+// top border) at styles.Width columns, with welcomeFramePadding of blank space
+// on each side of the content. welcomeFrameInnerWidth is the content budget;
+// anything wider (e.g. the daemon status summary) must be truncated to it or
+// the side borders get pushed past the top/bottom border.
+const (
+	welcomeFramePadding    = 4
+	welcomeFrameInnerWidth = styles.Width - 2 - (welcomeFramePadding * 2)
+)
+
 // WelcomeAction represents user selection
 type WelcomeAction int
 
@@ -574,8 +584,8 @@ func (w WelcomeModel) View() string {
 
 	// Build custom frame with embedded version in top border
 	boxWidth := styles.Width
-	horizontalPadding := 4
-	innerWidth := boxWidth - 2 - (horizontalPadding * 2) // 80 - 2 - 8 = 70
+	horizontalPadding := welcomeFramePadding
+	innerWidth := welcomeFrameInnerWidth
 
 	versionStr := "v" + w.Version
 
@@ -608,6 +618,12 @@ func (w WelcomeModel) View() string {
 			leftPad := (innerWidth - visibleLen) / 2
 			rightPad := innerWidth - visibleLen - leftPad
 			line = strings.Repeat(" ", leftPad) + line + strings.Repeat(" ", rightPad)
+		} else if visibleLen > innerWidth {
+			// Overflow guard: the borders are drawn at boxWidth, so a content
+			// line wider than innerWidth (e.g. a long daemon summary or error
+			// message) would push the side border past the frame. Truncate it
+			// to the inner width; ansi-aware truncation keeps colors intact.
+			line = lipgloss.NewStyle().Inline(true).MaxWidth(innerWidth).Render(line)
 		}
 		sideBorder := borderStyle.Render("│")
 		framedLines = append(framedLines, sideBorder+paddingStr+line+paddingStr+sideBorder)
@@ -650,19 +666,36 @@ func renderDaemonSummaryLine(daemon DaemonStatusInfo) string {
 		networkStyled = styles.SuccessStyle.Render(networkLabel)
 	}
 
-	addressLabel := "Not configured"
-	if daemon.Address != "" {
-		addressLabel = truncateWelcomeAddress(daemon.Address, 16)
-	}
-
 	statusStyled := renderDaemonStateLabel(daemon)
 
-	blockStyled := renderWelcomeHeight(daemon)
+	prefix := styles.MutedStyle.Render("Network:") + networkStyled +
+		" " + statusStyled + "   " + styles.MutedStyle.Render("Daemon:")
 
-	return styles.MutedStyle.Render("Network:") + networkStyled +
-		" " + statusStyled +
-		"   " + styles.MutedStyle.Render("Daemon:") + styles.TextStyle.Render(addressLabel) +
+	// The daemon address is the flexible segment. Reserve a readable minimum
+	// for it and pick the most detailed height format (block / peer [pct],
+	// block / peer, then just block) that leaves that much room, so the whole
+	// line stays inside the welcome frame.
+	const minAddressWidth = 6
+	heightMax := welcomeFrameInnerWidth - lipgloss.Width(prefix) - lipgloss.Width("   "+styles.MutedStyle.Render("Height:")) - minAddressWidth
+	blockStyled := renderWelcomeHeightFitting(daemon, heightMax)
+
+	addressMax := welcomeFrameInnerWidth - lipgloss.Width(prefix) - lipgloss.Width("   "+styles.MutedStyle.Render("Height:")+blockStyled)
+	if addressMax < minAddressWidth {
+		addressMax = minAddressWidth
+	}
+	addressLabel := "Not configured"
+	if daemon.Address != "" {
+		addressLabel = truncateWelcomeAddress(daemon.Address, addressMax)
+	}
+
+	line := prefix + styles.TextStyle.Render(addressLabel) +
 		"   " + styles.MutedStyle.Render("Height:") + blockStyled
+	// Last-resort guard (e.g. a long "Not configured" fallback): never let a
+	// too-wide summary push the frame borders apart.
+	if lipgloss.Width(line) > welcomeFrameInnerWidth {
+		line = lipgloss.NewStyle().Inline(true).MaxWidth(welcomeFrameInnerWidth).Render(line)
+	}
+	return line
 }
 
 // renderDaemonStateLabel renders an explicit daemon state word: Synced,
@@ -692,9 +725,33 @@ func renderDaemonStateLabel(daemon DaemonStatusInfo) string {
 // renderWelcomeHeight renders the daemon height, including the peer/target
 // height when known so a node catching up from genesis is obvious.
 func renderWelcomeHeight(daemon DaemonStatusInfo) string {
+	return renderWelcomeHeightMode(daemon, true, true)
+}
+
+// renderWelcomeHeightFitting picks the most detailed height display that fits
+// in maxWidth: block / peer (pct), then block / peer, then just block.
+func renderWelcomeHeightFitting(daemon DaemonStatusInfo, maxWidth int) string {
+	if maxWidth < 1 {
+		return renderWelcomeHeightMode(daemon, false, false)
+	}
+	if lipgloss.Width(renderWelcomeHeightMode(daemon, true, true)) <= maxWidth {
+		return renderWelcomeHeightMode(daemon, true, true)
+	}
+	if lipgloss.Width(renderWelcomeHeightMode(daemon, true, false)) <= maxWidth {
+		return renderWelcomeHeightMode(daemon, true, false)
+	}
+	return renderWelcomeHeightMode(daemon, false, false)
+}
+
+// renderWelcomeHeightMode renders the daemon height. withPeer includes the
+// peer/target height; withPct includes the sync percentage.
+func renderWelcomeHeightMode(daemon DaemonStatusInfo, withPeer, withPct bool) string {
 	if daemon.BlockHeight == 0 {
 		if daemon.PeerHeight > 0 {
-			return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+			if withPeer {
+				return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+			}
+			return styles.MutedStyle.Render("0")
 		}
 		return styles.MutedStyle.Render("-")
 	}
@@ -702,19 +759,21 @@ func renderWelcomeHeight(daemon DaemonStatusInfo) string {
 
 	if daemon.IsSynced {
 		blockStyled := styles.SuccessStyle.Render(blockStr)
-		if daemon.PeerHeight > 0 {
+		if withPeer && daemon.PeerHeight > 0 {
 			blockStyled += styles.MutedStyle.Render(" / ") + styles.SuccessStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
 		}
 		return blockStyled
 	}
 	if daemon.IsOnline {
 		blockStyled := styles.WarningStyle.Render(blockStr)
-		if daemon.PeerHeight > 0 {
+		if withPeer && daemon.PeerHeight > 0 {
 			blockStyled += styles.MutedStyle.Render(" / ") +
-				styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight))) +
-				styles.MutedStyle.Render(" (") +
-				styles.WarningStyle.Render(formatSyncPct(daemon.SyncProgress)) +
-				styles.MutedStyle.Render(")")
+				styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+			if withPct {
+				blockStyled += styles.MutedStyle.Render(" (") +
+					styles.WarningStyle.Render(formatSyncPct(daemon.SyncProgress)) +
+					styles.MutedStyle.Render(")")
+			}
 		}
 		return blockStyled
 	}
