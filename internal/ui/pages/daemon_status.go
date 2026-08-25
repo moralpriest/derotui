@@ -314,7 +314,12 @@ func (d DaemonStatusModel) View() string {
 			row("Integrator:", truncateMiddle(d.fallback(d.Snapshot.IntegratorAddress), 32)),
 		)
 	} else {
+		mode := strings.TrimSpace(d.Snapshot.Source)
+		if mode == "" {
+			mode = "External"
+		}
 		rows = append(rows,
+			row("Mode:", renderExternalSourceToken(mode)),
 			row("Binary:", truncatePlain(d.fallback(d.Snapshot.BinaryPath), contentWidth-labelWidth-1)),
 			row("Data:", truncatePlain(d.fallback(d.Snapshot.DataDir), contentWidth-labelWidth-1)),
 			row("RPC:", truncatePlain(d.fallback(d.Snapshot.RPCBind), contentWidth-labelWidth-1)),
@@ -475,12 +480,22 @@ func (d DaemonStatusModel) renderMetaLine() string {
 	parts := []string{d.renderNetwork()}
 	mode := strings.TrimSpace(d.Snapshot.Source)
 	if mode != "" && !strings.EqualFold(mode, "Embedded") {
-		parts = append(parts, styles.MutedStyle.Render(mode))
+		parts = append(parts, renderExternalSourceToken(mode))
 	}
 	if d.Snapshot.PID > 0 {
 		parts = append(parts, styles.MutedStyle.Render(fmt.Sprintf("PID %d", d.Snapshot.PID)))
 	}
 	return strings.Join(parts, styles.MutedStyle.Render("  •  "))
+}
+
+// renderExternalSourceToken colors a non-embedded daemon source: orange for
+// user-launched externals, cyan for system-managed ones.
+func renderExternalSourceToken(source string) string {
+	src := strings.TrimSpace(source)
+	if strings.EqualFold(src, "System Daemon") {
+		return styles.SimulatorStyle.Render(src)
+	}
+	return styles.WarningStyle.Render(src)
 }
 
 func (d DaemonStatusModel) renderHeightLine() string {
