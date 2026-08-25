@@ -23,10 +23,12 @@ import (
 )
 
 type EmbeddedDaemon struct {
-	mu       sync.RWMutex
-	cmd      *exec.Cmd
-	logBuf   *LogBuffer
-	settings appconfig.DaemonSettings
+	mu        sync.RWMutex
+	cmd       *exec.Cmd
+	logBuf    *LogBuffer
+	settings  appconfig.DaemonSettings
+	miner     helperMinerStatus
+	refresher sync.Once
 }
 
 func NewEmbeddedDaemon(logBuf *LogBuffer) *EmbeddedDaemon {
@@ -136,11 +138,27 @@ func (d *EmbeddedDaemon) StopMiner() error {
 }
 
 func (d *EmbeddedDaemon) MinerStatus() helperMinerStatus {
-	resp, err := d.request(helperRequest{Action: "miner_status"})
-	if err != nil || !resp.OK {
-		return helperMinerStatus{}
+	d.refresher.Do(func() { go d.minerRefresher() })
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.miner
+}
+
+// minerRefresher polls the helper's miner status in the background so that
+// Update-path callers never block on a socket RPC (a stalled helper must not
+// freeze the UI).
+func (d *EmbeddedDaemon) minerRefresher() {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for range t.C {
+		st := helperMinerStatus{}
+		if resp, err := d.request(helperRequest{Action: "miner_status"}); err == nil && resp.OK {
+			st = resp.Miner
+		}
+		d.mu.Lock()
+		d.miner = st
+		d.mu.Unlock()
 	}
-	return resp.Miner
 }
 
 func (d *EmbeddedDaemon) GetStatus() (pages.DaemonStatusSnapshot, wallet.DaemonInfo, []string) {
@@ -168,6 +186,7 @@ func (d *EmbeddedDaemon) GetStatus() (pages.DaemonStatusSnapshot, wallet.DaemonI
 		StableHeight:          info.StableHeight,
 		TopoHeight:            info.TopoHeight,
 		PeerHeight:            resp.PeerHeight,
+		BootstrapProgress:     resp.BootstrapProgress,
 		SyncProgress:          resp.SyncProgress,
 		Difficulty:            info.Difficulty,
 		IncomingPeers:         resp.IncomingPeers,
@@ -204,6 +223,10 @@ func (d *EmbeddedDaemon) GetRPCBind() string {
 func (d *EmbeddedDaemon) request(req helperRequest) (helperResponse, error) {
 	var resp helperResponse
 	conn, err := net.Dial("unix", helperSocketPath())
+	if err != nil {
+		return helperResponse{}, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
 	if err != nil {
 		return resp, err
 	}

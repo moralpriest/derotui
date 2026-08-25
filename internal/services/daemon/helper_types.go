@@ -39,11 +39,12 @@ type helperResponse struct {
 	PeerHeight          int64             `json:"peer_height,omitempty"`
 	SyncProgress        float64           `json:"sync_progress,omitempty"`
 	FinalizingBootstrap bool              `json:"finalizing_bootstrap,omitempty"`
-	IncomingPeers     uint64 `json:"incoming_peers,omitempty"`
-	OutgoingPeers     uint64 `json:"outgoing_peers,omitempty"`
-	KnownPeers        uint64 `json:"known_peers,omitempty"`
-	BootstrapHeight  int64  `json:"bootstrap_height,omitempty"`
-	BootstrapChunk  int64  `json:"bootstrap_chunk,omitempty"`
-	BootstrapStep   uint   `json:"bootstrap_step,omitempty"`
+	IncomingPeers       uint64            `json:"incoming_peers,omitempty"`
+	OutgoingPeers       uint64            `json:"outgoing_peers,omitempty"`
+	KnownPeers          uint64            `json:"known_peers,omitempty"`
+	BootstrapHeight     int64             `json:"bootstrap_height,omitempty"`
+	BootstrapProgress   float64           `json:"bootstrap_progress,omitempty"`
+	BootstrapChunk      int64             `json:"bootstrap_chunk,omitempty"`
+	BootstrapStep       uint              `json:"bootstrap_step,omitempty"`
 	Miner               helperMinerStatus `json:"miner,omitempty"`
 }
