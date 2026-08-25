@@ -489,7 +489,7 @@ func (d DaemonStatusModel) renderRPCLine() string {
 func (d DaemonStatusModel) renderMetaLine() string {
 	parts := []string{d.renderNetwork()}
 	mode := strings.TrimSpace(d.Snapshot.Source)
-	if mode != "" {
+	if mode != "" && !strings.EqualFold(mode, "Embedded") {
 		parts = append(parts, styles.MutedStyle.Render(mode))
 	}
 	if d.Snapshot.PID > 0 {

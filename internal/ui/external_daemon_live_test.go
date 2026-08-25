@@ -3,7 +3,10 @@
 package ui
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/deroproject/dero-wallet-cli/internal/config"
@@ -18,6 +21,9 @@ func TestExternalDaemonLivePipeline(t *testing.T) {
 	info := wallet.GetDaemonInfo(context.Background(), addr)
 	if !info.IsOnline {
 		t.Skipf("no live daemon at %s", addr)
+	}
+	if userTUISessionActive() {
+		t.Skip("a live derotui session owns this daemon; skipping live pipeline assertions")
 	}
 
 	settings := config.GetDaemonSettings()
@@ -62,4 +68,27 @@ func TestExternalDaemonLivePipeline(t *testing.T) {
 	if got.LogDir == "" {
 		t.Fatal("expected real --log-dir in settings")
 	}
+}
+
+// userTUISessionActive reports whether a derotui TUI (via its daemon-helper
+// child) is currently running. The live-pipeline test must not assert against
+// a user-owned session.
+func userTUISessionActive() bool {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join("/proc", e.Name(), "cmdline"))
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(b, []byte("daemon-helper")) {
+			return true
+		}
+	}
+	return false
 }
