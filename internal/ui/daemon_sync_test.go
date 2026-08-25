@@ -168,3 +168,20 @@ func TestSyncProgressRatioClamping(t *testing.T) {
 		t.Fatalf("height above target clamps to 100, got %f", got)
 	}
 }
+
+func TestClassifyDaemonSyncFastsyncHeightZero(t *testing.T) {
+	clearReferenceCache()
+	setMockReference(t, func(network string) (uint64, bool) { return 0, false })
+	info := classifyDaemonSync(wallet.DaemonInfo{
+		IsOnline: true, IsHealthy: true, Height: 0, IncomingPeers: 2,
+	}, "mainnet", 7_000_000)
+	if !info.IsBootstrapping {
+		t.Fatalf("expected bootstrapping during fastsync height 0")
+	}
+	if info.IsSynced || info.IsSyncing {
+		t.Fatalf("fastsync height 0 should not be synced/syncing")
+	}
+	if info.PeerHeight != 7_000_000 {
+		t.Fatalf("peer height=%d", info.PeerHeight)
+	}
+}

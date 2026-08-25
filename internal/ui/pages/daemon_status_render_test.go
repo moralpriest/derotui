@@ -244,3 +244,18 @@ func TestRenderHeightLine(t *testing.T) {
 		})
 	}
 }
+
+func TestRenderStateLineBootstrappingBeatsOnline(t *testing.T) {
+	d := NewDaemonStatus()
+	d.Snapshot = DaemonStatusSnapshot{
+		IsOnline: true, IsHealthy: true, IsBootstrapping: true,
+		IncomingPeers: 3, PeerHeight: 7000000, SyncProgress: 20,
+	}
+	got := stripANSI(d.renderStateLine())
+	if !strings.Contains(got, "Bootstrap") {
+		t.Fatalf("got %q want Bootstrapping", got)
+	}
+	if got == "Online" {
+		t.Fatalf("Online must not win over Bootstrapping")
+	}
+}

@@ -110,12 +110,12 @@ func classifyDaemonSync(info wallet.DaemonInfo, network string, peerHeight int64
 	if info.Height == 0 {
 		info.IsSynced = false
 		info.IsSyncing = false
-		info.IsBootstrapping = false
 		info.IsFinalizingBootstrap = false
 		info.SyncProgress = 0
 		if peerHeight > 0 {
 			info.PeerHeight = peerHeight
 		}
+		info.IsBootstrapping = info.IsBootstrapping || peerHeight > 0 || info.IncomingPeers > 0 || info.OutgoingPeers > 0
 		return info
 	}
 

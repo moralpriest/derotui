@@ -106,7 +106,12 @@ func (s *helperState) syncProgressLogger(stop <-chan struct{}) {
 			peerHeight, _ := p2p.Best_Peer_Height()
 			s.mu.RUnlock()
 			if peerHeight <= 0 || height <= 0 {
-				s.logf("daemon waiting for peers height=%d peers=%d", height, p2p.Peer_Count())
+				if p2p.Peer_Count() == 0 {
+					s.logf("daemon waiting for peers height=%d peers=%d", height, p2p.Peer_Count())
+				} else {
+					bh, bc, bs := p2p.GetSyncProgress()
+					s.logf("daemon bootstrapping height=%d peers=%d step=%d chunk=%d/%d", height, p2p.Peer_Count(), bs, bc, bh)
+				}
 				continue
 			}
 			progress := syncProgressRatio(height, peerHeight)
@@ -168,7 +173,11 @@ func (s *helperState) handleRequest(req helperRequest) helperResponse {
 	case "status":
 		snap, info, logs := s.status()
 		peerHeight, syncProgress, finalizing := s.syncState()
-		return helperResponse{OK: true, Snapshot: snap, Info: daemonInfoMap(info), Logs: logs, RPCBind: snap.RPCBind, PeerHeight: peerHeight, SyncProgress: syncProgress, FinalizingBootstrap: finalizing, Miner: s.minerStatus()}
+		incoming, outgoing := p2p.Peer_Direction_Count()
+		known := p2p.Peer_Count()
+		// known includes all; Peer_Count is total, direction gives incoming/outgoing
+		bh, bc, bs := p2p.GetSyncProgress()
+		return helperResponse{OK: true, Snapshot: snap, Info: daemonInfoMap(info), Logs: logs, RPCBind: snap.RPCBind, PeerHeight: peerHeight, SyncProgress: syncProgress, FinalizingBootstrap: finalizing, Miner: s.minerStatus(), IncomingPeers: incoming, OutgoingPeers: outgoing, KnownPeers: known, BootstrapHeight: bh, BootstrapChunk: bc, BootstrapStep: bs}
 	case "miner_start":
 		if err := s.startMiner(req.Address, req.Threads); err != nil {
 			return helperResponse{OK: false, Error: err.Error()}
@@ -313,24 +322,24 @@ func (s *helperState) status() (Snapshot, wallet.DaemonInfo, []string) {
 	difficulty := s.chain.Get_Difficulty()
 	peers := p2p.Peer_Count()
 	info := wallet.DaemonInfo{
-		Height:          nonNegativeHeight(height),
-		StableHeight:    stableHeight,
-		TopoHeight:      topoHeight,
-		IsOnline:        true,
-		IsHealthy:       true,
+		Height:                nonNegativeHeight(height),
+		StableHeight:          stableHeight,
+		TopoHeight:            topoHeight,
+		IsOnline:              true,
+		IsHealthy:             true,
 		IsSynced:              peerHeight > 0 && height > 0 && height >= peerHeight,
 		IsSyncing:             peerHeight > 0 && height > 0 && height < peerHeight,
-		IsBootstrapping:       peerHeight > 0 && height > 0 && topoHeight != height,
+		IsBootstrapping:       (height <= 0 && peerHeight > 0) || (peerHeight > 0 && height > 0 && topoHeight != height) || p2p.IsBootstrapActive(),
 		IsFinalizingBootstrap: peerHeight > 0 && height > 0 && topoHeight > 0 && topoHeight < height && height >= peerHeight,
-		PeerHeight:      peerHeight,
-		SyncProgress:    syncProgressRatio(height, peerHeight),
-		Difficulty:      difficulty,
-		IncomingPeers:   peers,
-		OutgoingPeers:   0,
-		KnownPeers:      peers,
-		Version:         deroconfig.Version.String(),
-		Uptime:          uint64(time.Since(globals.StartTime).Seconds()),
-		TxPoolSize:      uint64(len(s.chain.Mempool.Mempool_List_TX())),
+		PeerHeight:            peerHeight,
+		SyncProgress:          syncProgressRatio(height, peerHeight),
+		Difficulty:            difficulty,
+		IncomingPeers:         peers,
+		OutgoingPeers:         0,
+		KnownPeers:            peers,
+		Version:               deroconfig.Version.String(),
+		Uptime:                uint64(time.Since(globals.StartTime).Seconds()),
+		TxPoolSize:            uint64(len(s.chain.Mempool.Mempool_List_TX())),
 	}
 	network := "Mainnet"
 	if globals.IsSimulator() {
@@ -360,7 +369,19 @@ func (s *helperState) syncState() (int64, float64, bool) {
 	peerHeight, _ := p2p.Best_Peer_Height()
 	finalizing := height < 0
 	if peerHeight <= 0 || height <= 0 {
-		return peerHeight, 0, finalizing
+		progress := 0.0
+		if p2p.IsBootstrapActive() {
+			_, _, step := p2p.GetSyncProgress()
+			switch step {
+			case 1:
+				progress = 20
+			case 2:
+				progress = 65
+			default:
+				progress = 8
+			}
+		}
+		return peerHeight, progress, finalizing
 	}
 	progress := syncProgressRatio(height, peerHeight)
 	return peerHeight, progress, finalizing

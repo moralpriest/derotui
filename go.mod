@@ -28,6 +28,7 @@ require (
 	github.com/cenkalti/rpc2 v1.0.5 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect
+	github.com/charmbracelet/harmonica v0.2.0 // indirect
 	github.com/charmbracelet/ultraviolet v0.0.0-20260811164956-006e29f97886 // indirect
 	github.com/charmbracelet/x/ansi v0.11.8 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
@@ -81,7 +82,7 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/deroproject/derohe => github.com/DEROFDN/derohe v0.0.0-20260821221519-e7cf5eb2c1f5
+replace github.com/deroproject/derohe => ../derohe
 
 replace github.com/civilware/epoch => github.com/moralpriest/epoch v0.0.0-20260812013238-2104b271e52a
 

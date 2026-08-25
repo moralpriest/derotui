@@ -10,12 +10,38 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/progress"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
 	"github.com/deroproject/dero-wallet-cli/internal/services/installer"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 )
+
+func renderProgressBar(percent float64, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 1 {
+		percent = 1
+	}
+	filled := int(percent*float64(width) + 0.5)
+	if filled > width {
+		filled = width
+	}
+	out := make([]rune, width)
+	for i := 0; i < width; i++ {
+		if i < filled {
+			out[i] = '█'
+		} else {
+			out[i] = '░'
+		}
+	}
+	return string(out)
+}
 
 var (
 	daemonStartKeys     = key.NewBinding(key.WithKeys("s"))
@@ -91,6 +117,7 @@ type DaemonStatusModel struct {
 	// byte right after the page appears (e.g. the trailing 'c' of a device
 	// attributes response), which would otherwise trigger an action or jump to
 	// another page. Esc and the Y/N confirm keys remain active.
+	bar         progress.Model
 	settleUntil time.Time
 	width       int
 	height      int
@@ -104,8 +131,12 @@ const daemonStatusLabelWidth = 12
 // terminal emits right after navigation without blocking deliberate use.
 const daemonStatusSettleWindow = 5 * time.Second
 
-func NewDaemonStatus() DaemonStatusModel  { return DaemonStatusModel{} }
-func (d DaemonStatusModel) Init() tea.Cmd { return nil }
+func NewDaemonStatus() DaemonStatusModel {
+	return DaemonStatusModel{
+		bar: progress.New(progress.WithDefaultBlend(), progress.WithWidth(36)),
+	}
+}
+func (d DaemonStatusModel) Init() tea.Cmd { return d.bar.Init() }
 
 // ArmSettle suppresses single-letter action keys until daemonStatusSettleWindow
 // has elapsed. Call it whenever the page is entered from another page.
@@ -121,6 +152,11 @@ func padLabelText(label string) string {
 }
 
 func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
+	if _, ok := msg.(progress.FrameMsg); ok {
+		var cmd tea.Cmd
+		d.bar, cmd = d.bar.Update(msg)
+		return d, cmd
+	}
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
 		d.DownloadError = ""
@@ -214,6 +250,9 @@ func (d DaemonStatusModel) View() string {
 	rows := []string{
 		sectionHeader("Status", styles.ColorSuccess),
 		row("State:", d.renderStateLine()),
+	}
+	if bar := d.renderProgressRow(); bar != "" {
+		rows = append(rows, bar)
 	}
 	if d.Snapshot.ApplyingPrune {
 		rows = append(rows, row("Prune:", styles.WarningStyle.Render("Applying pruning…")))
@@ -403,14 +442,15 @@ func (d DaemonStatusModel) renderStateLine() string {
 		return styles.WarningStyle.Render("Downloading")
 	}
 	if d.Snapshot.IsOnline && d.Snapshot.IsHealthy {
-		if d.Snapshot.BlockHeight == 0 && d.Snapshot.PeerHeight == 0 && d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 {
-			return styles.WarningStyle.Render("Waiting for peers")
-		}
 		if d.Snapshot.IsFinalizingBootstrap {
 			return styles.WarningStyle.Render("Finalizing Bootstrap...")
 		}
 		if d.Snapshot.IsBootstrapping {
 			return styles.BootstrappingStyle.Render("Bootstrapping " + formatSyncPct(d.Snapshot.SyncProgress))
+		}
+
+		if d.Snapshot.BlockHeight == 0 && d.Snapshot.PeerHeight == 0 && d.Snapshot.IncomingPeers == 0 && d.Snapshot.OutgoingPeers == 0 {
+			return styles.WarningStyle.Render("Waiting for peers")
 		}
 		if d.Snapshot.IsSynced {
 			return styles.SuccessStyle.Render("Synced")
@@ -634,4 +674,39 @@ func (d *DaemonStatusModel) ResetActions() {
 	d.wantUninstallApply = false
 	d.wantUninstallDone = false
 	d.cancelled = false
+}
+
+func (d DaemonStatusModel) renderProgressRow() string {
+	if !d.Snapshot.IsBootstrapping && !d.Snapshot.IsSyncing && !d.Snapshot.IsFinalizingBootstrap {
+		return ""
+	}
+	width := d.width
+	if width == 0 || width < 20 {
+		width = 40
+	}
+	pct := d.Snapshot.SyncProgress
+	if pct > 1 {
+		pct = pct / 100
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	if pct > 1 {
+		pct = 1
+	}
+	if pct == 0 {
+		pct = 0.05
+	}
+	// Clamp bar width to available viewport width minus label/padding
+	labelWidth := lipgloss.Width("Progress: ")
+	avail := width - 8 - labelWidth
+	if avail < 8 {
+		avail = 8
+	}
+	if avail > 48 {
+		avail = 48
+	}
+	bar := d.bar
+	bar.SetWidth(avail)
+	return bar.ViewAs(pct)
 }
