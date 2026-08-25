@@ -5,6 +5,8 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/deroproject/dero-wallet-cli/internal/config"
@@ -12,6 +14,12 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 )
+
+var testAnsiRe = regexp.MustCompile("\x1b\\[[0-9;]*m")
+
+func stripANSI(s string) string {
+	return testAnsiRe.ReplaceAllString(s, "")
+}
 
 func TestPreferredDaemonAddressStickyWins(t *testing.T) {
 	m := NewModel()
@@ -379,5 +387,28 @@ func TestApplyPruneConversionFullProfileNoOp(t *testing.T) {
 	}
 	if s.PruneHistory != "" {
 		t.Fatalf("full profile must stay empty, got %q", s.PruneHistory)
+	}
+}
+
+// End-to-end: in embedded mode with nothing running, the daemon manager must
+// offer Reset right away — it must not require pressing Start first. Mirrors
+// the real flow: page entry runs daemonManagerStatusCmd, which reports the
+// stopped state as source "Not running", and applyDaemonManagerMsg applies the
+// configured embedded ownership.
+func TestResetOfferedBeforeStartInEmbeddedMode(t *testing.T) {
+	mode := strings.ToLower(strings.TrimSpace(config.GetDaemonSettings().Mode))
+	if mode != "" && mode != "embedded" {
+		t.Skip("requires embedded daemon mode")
+	}
+	m := NewModel()
+	m.applyDaemonManagerMsg(daemonManagerMsg{source: "Not running"})
+	if !m.daemonStatus.ConfiguredEmbedded {
+		t.Fatal("embedded mode must set ConfiguredEmbedded")
+	}
+	if m.daemonStatus.Snapshot.Source != "Not running" {
+		t.Fatalf("expected source Not running, got %q", m.daemonStatus.Snapshot.Source)
+	}
+	if !strings.Contains(stripANSI(m.daemonStatus.View()), "U Reset") {
+		t.Fatal("U Reset must be offered while stopped in embedded mode")
 	}
 }

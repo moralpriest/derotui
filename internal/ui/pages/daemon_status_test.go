@@ -200,25 +200,57 @@ func TestDaemonStatusRendersUninstallConfirm(t *testing.T) {
 // Reset is shown in the footer for a systemd service, the embedded helper,
 // and managed/planned local nodes — anything we own — but hidden for
 // external daemons we merely connected to.
+// Reset is scoped to embedded ownership: shown for the configured embedded
+// mode or an installed System Daemon — even while stopped. It stays hidden
+// for externally detected daemons we don't own.
 func TestDaemonStatusFooterShowsResetForOwnedDaemons(t *testing.T) {
 	for _, tc := range []struct {
-		source string
-		shown  bool
+		source   string
+		embedCfg bool
+		shown    bool
 	}{
-		{"System Daemon", true},
-		{"Embedded", true},
-		{"Managed Local", true},
-		{"External Local", false},
-		{"Unknown", false},
+		{"Embedded", true, true},
+		{"Not running", true, true},
+		{"Unknown", true, true},
+		{"System Daemon", false, true},
+		{"Managed Local", false, false},
+		{"External Local", true, false},
+		{"Embedded", false, false},
 	} {
 		d := NewDaemonStatus()
+		d.ConfiguredEmbedded = tc.embedCfg
 		d.SetSnapshot(DaemonStatusSnapshot{Running: tc.source == "System Daemon", Source: tc.source})
 
 		view := stripANSI(d.View())
 		has := strings.Contains(view, "U Reset")
 		if has != tc.shown {
-			t.Errorf("source %q: expected Reset shown=%v, got %v", tc.source, tc.shown, has)
+			t.Errorf("source %q embedCfg=%v: expected Reset shown=%v, got %v", tc.source, tc.embedCfg, tc.shown, has)
 		}
+	}
+}
+
+// The U hotkey must be inert when Reset isn't offered — a hidden footer hint
+// must not leave a live shortcut behind.
+func TestDaemonStatusUninstallKeyGatedByAvailability(t *testing.T) {
+	d := NewDaemonStatus()
+	d.ConfiguredEmbedded = true
+	d.SetSnapshot(DaemonStatusSnapshot{Source: "External Local"})
+	next, _ := d.Update(planPreviewKeys("u"))
+	if next.WantUninstall() {
+		t.Fatal("u must not request uninstall for an external local daemon")
+	}
+
+	d = NewDaemonStatus()
+	next, _ = d.Update(planPreviewKeys("u"))
+	if next.WantUninstall() {
+		t.Fatal("u must not request uninstall outside embedded scope")
+	}
+
+	d.ConfiguredEmbedded = true
+	d.SetSnapshot(DaemonStatusSnapshot{Source: "Not running"})
+	next, _ = d.Update(planPreviewKeys("u"))
+	if !next.WantUninstall() {
+		t.Fatal("expected WantUninstall in embedded scope while stopped")
 	}
 }
 

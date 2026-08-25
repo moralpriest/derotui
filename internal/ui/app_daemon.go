@@ -752,6 +752,8 @@ func (m *Model) applyDaemonManagerMsg(msg daemonManagerMsg) {
 		ApplyingPrune:         m.applyingPrune,
 	}
 
+	mode := strings.TrimSpace(settings.Mode)
+	m.daemonStatus.ConfiguredEmbedded = mode == "" || strings.EqualFold(mode, "embedded")
 	m.daemonStatus.SetSnapshot(baseline)
 	m.fillIntegratorFallback()
 	if !m.pendingPrune {

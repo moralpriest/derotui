@@ -96,6 +96,7 @@ type DaemonStatusSnapshot struct {
 
 type DaemonStatusModel struct {
 	Snapshot            DaemonStatusSnapshot
+	ConfiguredEmbedded  bool
 	Downloading         bool
 	DownloadError       string
 	InstallResult       string
@@ -217,7 +218,9 @@ func (d DaemonStatusModel) Update(msg tea.Msg) (DaemonStatusModel, tea.Cmd) {
 		case key.Matches(msg, daemonConfigKeys):
 			d.wantSettings = true
 		case key.Matches(msg, daemonUninstallKeys):
-			d.wantUninstall = true
+			if d.resetAvailable() {
+				d.wantUninstall = true
+			}
 		}
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
@@ -403,7 +406,6 @@ func (d DaemonStatusModel) renderFooter() string {
 
 	parts := []string{}
 	isEmbedded := strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "Embedded")
-	isSystemDaemon := strings.EqualFold(strings.TrimSpace(d.Snapshot.Source), "System Daemon")
 
 	if !d.Downloading && !d.Snapshot.Running && !d.Snapshot.Managed {
 		label := "Start"
@@ -428,19 +430,24 @@ func (d DaemonStatusModel) renderFooter() string {
 		parts = append(parts, k("I")+" "+m("Install Service"))
 	}
 
-	// Reset is offered for any daemon we own or installed: the embedded
-	// helper, a systemd service, or a managed/planned local daemon. External
-	// local daemons (daemons we merely connected to) are left alone — we
-	// don't own their data.
-	source := strings.ToLower(strings.TrimSpace(d.Snapshot.Source))
-	resettable := isEmbedded || isSystemDaemon ||
-		strings.Contains(source, "managed") || strings.Contains(source, "planned")
-	if !d.Downloading && resettable && !d.ConfirmingUninstall && d.InstallPlan == nil {
+	// Reset is scoped to embedded ownership (see resetAvailable): the
+	// configured embedded mode or an installed System Daemon, even while
+	// stopped. External local daemons we merely connected to are left alone —
+	// we don't own their data.
+	if !d.Downloading && d.resetAvailable() && !d.ConfirmingUninstall && d.InstallPlan == nil {
 		parts = append(parts, k("U")+" "+m("Reset"))
 	}
 	parts = append(parts, k("C")+" "+m("Config"), k("Esc")+" "+m("Back"))
 
 	return strings.Join(parts, sep)
+}
+
+func (d DaemonStatusModel) resetAvailable() bool {
+	src := strings.TrimSpace(d.Snapshot.Source)
+	if strings.EqualFold(src, "External Local") {
+		return false
+	}
+	return d.ConfiguredEmbedded || strings.EqualFold(src, "System Daemon")
 }
 
 func (d DaemonStatusModel) renderStateLine() string {
