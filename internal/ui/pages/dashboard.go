@@ -100,27 +100,27 @@ var basePages = []pageInfo{
 	{
 		// Page 1: Core actions
 		actions: []actionItem{
-			{"S", "", "Send DERO"},
-			{"C", "⎘", "Copy Address"},
-			{"Y", "", "QR Code"},
-			{"R", "", "Payment Request"},
-			{"H", "", "History"},
+			{"S", "→", "Send DERO"},
+			{"C", "□", "Copy Address"},
+			{"Y", "▣", "QR Code"},
+			{"R", "◆", "Payment Request"},
+			{"H", "↺", "History"},
 		},
 	},
 	{
 		// Page 2: Advanced actions
 		actions: []actionItem{
-			{"V", "✎", "View Seed"},
-			{"K", "⚷", "View Hex Key"},
-			{"P", "↻", "Change Password"},
+			{"V", "◇", "View Seed"},
+			{"K", "▤", "View Hex Key"},
+			{"P", "↻", "Change Password"},
 			{"D", "♥", "Donate"},
-			{"N", "", "Names"},
+			{"N", "≡", "Names"},
 			{"X", "⇄", "XSWD"},
 		},
 	},
 }
 
-var registerAction = actionItem{"G", "✎", "Register Wallet"}
+var registerAction = actionItem{"G", "✓", "Register Wallet"}
 
 // getPages returns pages with Register action only when wallet is unregistered
 func (d DashboardModel) getPages() []pageInfo {
