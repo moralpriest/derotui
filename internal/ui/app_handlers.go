@@ -600,6 +600,15 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 			return tea.Batch(m.integratedAddr.Init(), m.setWindowTitleCmd())
 		}
 	}
+	if m.dashboard.WantNames() {
+		m.dashboard.ResetActions()
+		if m.wallet != nil {
+			m.names = pages.NewNames()
+			m.names.SetLoading(true)
+			m.page = PageNames
+			return tea.Batch(m.names.Init(), m.loadNamesCmd(), m.setWindowTitleCmd())
+		}
+	}
 	if m.dashboard.WantDonate() {
 		m.dashboard.ResetActions()
 		if m.wallet == nil {

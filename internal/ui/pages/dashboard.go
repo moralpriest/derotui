@@ -24,6 +24,7 @@ var (
 	dashboardXSWDKeys           = key.NewBinding(key.WithKeys("x"))
 	dashboardIntegratedAddrKeys = key.NewBinding(key.WithKeys("r"))
 	dashboardDonateKeys         = key.NewBinding(key.WithKeys("d"))
+	dashboardNamesKeys          = key.NewBinding(key.WithKeys("n"))
 	dashboardPrevPageKeys       = key.NewBinding(key.WithKeys("left", "["))
 	dashboardNextPageKeys       = key.NewBinding(key.WithKeys("right", "]"))
 	dashboardDownKeys           = key.NewBinding(key.WithKeys("down", "j"))
@@ -68,6 +69,7 @@ type DashboardModel struct {
 	wantXSWD           bool
 	wantIntegratedAddr bool // NEW: generate integrated address
 	wantDonate         bool // NEW: donate to developer
+	wantNames          bool // NEW: registered names management
 
 	// XSWD status
 	xswdRunning bool
@@ -112,6 +114,7 @@ var basePages = []pageInfo{
 			{"K", "⚷", "View Hex Key"},
 			{"P", "↻", "Change Password"},
 			{"D", "♥", "Donate"},
+			{"N", "", "Names"},
 			{"X", "⇄", "XSWD"},
 		},
 	},
@@ -200,6 +203,8 @@ func (d DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			d.wantIntegratedAddr = true
 		case key.Matches(msg, dashboardDonateKeys):
 			d.wantDonate = true
+		case key.Matches(msg, dashboardNamesKeys):
+			d.wantNames = true
 
 		// Page navigation with paginator
 		case key.Matches(msg, dashboardPrevPageKeys):
@@ -792,6 +797,11 @@ func (d DashboardModel) WantDonate() bool {
 	return d.wantDonate
 }
 
+// WantNames returns true if user wants to manage registered names
+func (d DashboardModel) WantNames() bool {
+	return d.wantNames
+}
+
 // SetXSWDRunning sets the XSWD running status
 func (d *DashboardModel) SetXSWDRunning(running bool) {
 	d.xswdRunning = running
@@ -884,6 +894,7 @@ func (d *DashboardModel) ResetActions() {
 	d.wantXSWD = false
 	d.wantIntegratedAddr = false
 	d.wantDonate = false
+	d.wantNames = false
 	// Don't reset tab or selection - let user stay where they were
 }
 
@@ -942,6 +953,8 @@ func (d DashboardModel) HandleMouse(msg tea.MouseClickMsg, windowWidth, windowHe
 					d.wantIntegratedAddr = true
 				case "D":
 					d.wantDonate = true
+				case "N":
+					d.wantNames = true
 				case "X":
 					d.wantXSWD = true
 				}

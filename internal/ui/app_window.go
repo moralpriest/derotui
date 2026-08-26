@@ -131,6 +131,15 @@ func (m Model) generateWindowTitle() string {
 		return base + " - XSWD Authorization"
 	case PageXSWDPerm:
 		return base + " - XSWD Permission"
+	case PageNames:
+		if walletName != "" {
+			return base + " - Registered Names - " + walletName
+		}
+		return base + " - Registered Names"
+	case PageNameRegister:
+		return base + " - Register Name"
+	case PageNameTransfer:
+		return base + " - Transfer Name"
 	default:
 		return base
 	}

@@ -493,6 +493,75 @@ func (m *Model) registerWalletCmd() tea.Cmd {
 	}
 }
 
+// loadNamesCmd queries the NameService SC for names owned by the wallet.
+func (m *Model) loadNamesCmd() tea.Cmd {
+	w := m.wallet
+
+	return func() tea.Msg {
+		if w == nil {
+			return namesLoadedMsg{err: "wallet not open"}
+		}
+		daemonAddr := w.GetDaemonAddress()
+		if daemonAddr == "" {
+			daemonAddr = walletapi.Daemon_Endpoint_Active
+		}
+		names, err := w.ListRegisteredNames(context.Background(), daemonAddr)
+		if err != nil {
+			return namesLoadedMsg{err: err.Error()}
+		}
+		return namesLoadedMsg{names: names}
+	}
+}
+
+// registerNameCmd registers a name with the NameService SC.
+func (m *Model) registerNameCmd(name string) tea.Cmd {
+	w := m.wallet
+
+	return func() tea.Msg {
+		if w == nil {
+			return nameRegisterResultMsg{err: "wallet not open"}
+		}
+		txID, err := w.RegisterName(context.Background(), name)
+		if err != nil {
+			return nameRegisterResultMsg{err: err.Error()}
+		}
+		return nameRegisterResultMsg{txID: txID}
+	}
+}
+
+// transferNameCmd transfers one name to a new owner.
+func (m *Model) transferNameCmd(name, newOwner string) tea.Cmd {
+	w := m.wallet
+
+	return func() tea.Msg {
+		if w == nil {
+			return nameTransferResultMsg{err: "wallet not open"}
+		}
+		txID, err := w.TransferName(context.Background(), name, newOwner)
+		if err != nil {
+			return nameTransferResultMsg{err: err.Error()}
+		}
+		return nameTransferResultMsg{txID: txID}
+	}
+}
+
+// transferAllNamesCmd transfers every listed name to a new owner.
+func (m *Model) transferAllNamesCmd(names []string, newOwner string) tea.Cmd {
+	w := m.wallet
+
+	return func() tea.Msg {
+		if w == nil {
+			return nameTransferResultMsg{err: "wallet not open"}
+		}
+		for _, name := range names {
+			if _, err := w.TransferName(context.Background(), name, newOwner); err != nil {
+				return nameTransferResultMsg{err: fmt.Sprintf("failed to transfer %q: %v", name, err)}
+			}
+		}
+		return nameTransferResultMsg{txID: fmt.Sprintf("%d names transferred", len(names))}
+	}
+}
+
 func (m *Model) changeWalletPassword(currentPass, newPass string) tea.Cmd {
 	return func() tea.Msg {
 		if m.wallet == nil {

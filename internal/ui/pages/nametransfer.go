@@ -18,6 +18,7 @@ type NameTransferModel struct {
 	name        string
 	transferAll bool
 	nameCount   int
+	names       []string // all names when transferAll is set
 	ownerInput  components.InputModel
 	cancelled   bool
 	confirmed   bool
@@ -45,10 +46,16 @@ func (n *NameTransferModel) SetName(name string) {
 }
 
 // SetTransferAll configures the form for bulk transfer of all owned names.
-func (n *NameTransferModel) SetTransferAll(count int) {
+func (n *NameTransferModel) SetTransferAll(names []string) {
 	n.transferAll = true
-	n.nameCount = count
+	n.nameCount = len(names)
+	n.names = names
 	n.name = ""
+}
+
+// GetAllNames returns the names to transfer when transferAll is set.
+func (n NameTransferModel) GetAllNames() []string {
+	return n.names
 }
 
 // IsTransferAll returns true if this is a bulk transfer-all operation.
@@ -89,6 +96,7 @@ func (n *NameTransferModel) Reset() {
 	n.name = ""
 	n.transferAll = false
 	n.nameCount = 0
+	n.names = nil
 	n.ownerInput = components.NewInput("New Owner", "Enter DERO address or username", false)
 	n.ownerInput.Focus()
 	n.cancelled = false

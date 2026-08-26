@@ -174,6 +174,24 @@ type regPollMsg struct {
 	err      string
 }
 
+// namesLoadedMsg carries the result of listing the wallet's registered names.
+type namesLoadedMsg struct {
+	names []wallet.NameEntry
+	err   string
+}
+
+// nameRegisterResultMsg carries the result of a name registration.
+type nameRegisterResultMsg struct {
+	txID string
+	err  string
+}
+
+// nameTransferResultMsg carries the result of a name transfer.
+type nameTransferResultMsg struct {
+	txID string
+	err  string
+}
+
 // xswdDialogTimeoutMsg fires when an XSWD auth/permission dialog has been
 // shown too long; the TUI dismisses it (denying the request) so it doesn't
 // hang forever.

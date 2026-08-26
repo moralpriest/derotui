@@ -106,6 +106,9 @@ const (
 	PageXSWDAuth       // XSWD app authorization dialog
 	PageXSWDPerm       // XSWD permission request dialog
 	PageMiner          // Embedded miner
+	PageNames          // Registered names management
+	PageNameRegister   // Register a new name
+	PageNameTransfer   // Transfer name ownership
 )
 
 // CLIOptions holds command line options
@@ -170,6 +173,9 @@ type Model struct {
 	miner          pages.MinerModel
 	integratedAddr pages.IntegratedAddrModel
 	palette        pages.PaletteModel
+	names          pages.NamesModel
+	nameRegister   pages.NameRegisterModel
+	nameTransfer   pages.NameTransferModel
 
 	// State flags
 	isCreating           bool
@@ -271,6 +277,9 @@ func NewModel() Model {
 		daemonSettings:   pages.NewDaemonSettings(config.GetDaemonSettings()),
 		miner:            pages.NewMiner(),
 		palette:          pages.NewPalette(),
+		names:            pages.NewNames(),
+		nameRegister:     pages.NewNameRegister(),
+		nameTransfer:     pages.NewNameTransfer(),
 		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
 	}
@@ -1017,6 +1026,44 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case regPollMsg:
 		m.applyRegPoll(msg)
 
+	case namesLoadedMsg:
+		if m.page != PageNames {
+			break
+		}
+		if msg.err != "" {
+			m.names.SetError(msg.err)
+		} else {
+			m.names.SetNames(msg.names)
+		}
+
+	case nameRegisterResultMsg:
+		if m.page != PageNameRegister {
+			break
+		}
+		if msg.err != "" {
+			m.nameRegister.SetError(msg.err)
+		} else {
+			m.nameRegister.Reset()
+			m.names.SetFlash("Name registered successfully", true)
+			m.page = PageNames
+			m.names.SetLoading(true)
+			cmds = append(cmds, m.setWindowTitleCmd(), m.loadNamesCmd())
+		}
+
+	case nameTransferResultMsg:
+		if m.page != PageNameTransfer {
+			break
+		}
+		if msg.err != "" {
+			m.nameTransfer.SetError(msg.err)
+		} else {
+			m.nameTransfer.Reset()
+			m.names.SetFlash(msg.txID+" successfully", true)
+			m.page = PageNames
+			m.names.SetLoading(true)
+			cmds = append(cmds, m.setWindowTitleCmd(), m.loadNamesCmd())
+		}
+
 	case passwordChangedMsg:
 		if msg.err != nil {
 			m.password.SetError(msg.err.Error())
@@ -1262,7 +1309,7 @@ func (m *Model) shutdownSession(quitting bool) {
 // menus so "/" never gets stolen from typed input.
 func paletteEnabled(page Page) bool {
 	switch page {
-	case PageMain, PageMiner, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
+	case PageMain, PageMiner, PageNames, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
 		return true
 	default:
 		return false
@@ -1593,6 +1640,71 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
 
+	case PageNames:
+		m.names, cmd = m.names.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.names.Cancelled() {
+			m.names.Refresh()
+			m.page = PageMain
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.names.WantRegister() {
+			m.names.ResetActions()
+			m.nameRegister = pages.NewNameRegister()
+			m.page = PageNameRegister
+			cmds = append(cmds, m.nameRegister.Init(), m.setWindowTitleCmd())
+		}
+		if name, ok := m.names.WantTransfer(); ok {
+			m.names.ResetActions()
+			m.nameTransfer = pages.NewNameTransfer()
+			m.nameTransfer.SetName(name)
+			m.page = PageNameTransfer
+			cmds = append(cmds, m.nameTransfer.Init(), m.setWindowTitleCmd())
+		}
+		if _, ok := m.names.WantTransferAll(); ok {
+			m.names.ResetActions()
+			names := make([]string, 0, len(m.names.Names()))
+			for _, entry := range m.names.Names() {
+				names = append(names, entry.Name)
+			}
+			m.nameTransfer = pages.NewNameTransfer()
+			m.nameTransfer.SetTransferAll(names)
+			m.page = PageNameTransfer
+			cmds = append(cmds, m.nameTransfer.Init(), m.setWindowTitleCmd())
+		}
+
+	case PageNameRegister:
+		m.nameRegister, cmd = m.nameRegister.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.nameRegister.Cancelled() {
+			m.nameRegister.Reset()
+			m.page = PageNames
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.nameRegister.Confirmed() {
+			m.nameRegister.StartProcessing()
+			name := m.nameRegister.GetName()
+			cmds = append(cmds, m.registerNameCmd(name))
+		}
+
+	case PageNameTransfer:
+		m.nameTransfer, cmd = m.nameTransfer.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.nameTransfer.Cancelled() {
+			m.nameTransfer.Reset()
+			m.page = PageNames
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.nameTransfer.Confirmed() {
+			m.nameTransfer.StartProcessing()
+			newOwner := m.nameTransfer.GetNewOwner()
+			if m.nameTransfer.IsTransferAll() {
+				cmds = append(cmds, m.transferAllNamesCmd(m.nameTransfer.GetAllNames(), newOwner))
+			} else {
+				cmds = append(cmds, m.transferNameCmd(m.nameTransfer.GetName(), newOwner))
+			}
+		}
+
 	case PageXSWDAuth:
 		m.xswdAuth, cmd = m.xswdAuth.Update(msg)
 		cmds = append(cmds, cmd)
@@ -1697,6 +1809,15 @@ func (m Model) View() tea.View {
 
 	case PageMiner:
 		content = m.miner.View()
+
+	case PageNames:
+		content = m.names.View()
+
+	case PageNameRegister:
+		content = m.nameRegister.View()
+
+	case PageNameTransfer:
+		content = m.nameTransfer.View()
 
 	case PageIntegratedAddr:
 		content = m.integratedAddr.View()
