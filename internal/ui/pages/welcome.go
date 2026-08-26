@@ -18,6 +18,16 @@ var (
 	welcomeDownKeys = key.NewBinding(key.WithKeys("down", "ctrl+n"))
 )
 
+// Welcome frame dimensions. The frame is drawn by hand (box + version in the
+// top border) at styles.Width columns, with welcomeFramePadding of blank space
+// on each side of the content. welcomeFrameInnerWidth is the content budget;
+// anything wider (e.g. the daemon status summary) must be truncated to it or
+// the side borders get pushed past the top/bottom border.
+const (
+	welcomeFramePadding    = 4
+	welcomeFrameInnerWidth = styles.Width - 2 - (welcomeFramePadding * 2)
+)
+
 // WelcomeAction represents user selection
 type WelcomeAction int
 
@@ -28,11 +38,14 @@ const (
 	ActionRestoreSeed
 	ActionRestoreKey
 	ActionConnectDaemon
+	ActionDaemon
 	ActionSwitchNetwork
 	ActionDebug
 	ActionExit
 	ActionSetTheme
 	ActionPreviewTheme
+	ActionMiner
+	ActionCloseWallet
 )
 
 // Command represents a slash command
@@ -44,13 +57,16 @@ type Command struct {
 
 // DaemonStatusInfo represents one daemon status row on welcome page.
 type DaemonStatusInfo struct {
-	IsOnline    bool
-	IsSynced    bool
-	IsHealthy   bool
-	Network     string
-	Address     string
-	BlockHeight uint64
-	TopoHeight  int64
+	IsOnline        bool
+	IsSynced        bool
+	IsSyncing       bool
+	IsBootstrapping bool
+	IsHealthy       bool
+	Network         string
+	Address         string
+	BlockHeight     uint64
+	PeerHeight      int64
+	SyncProgress    float64
 }
 
 // WelcomeModel represents the welcome screen
@@ -67,19 +83,20 @@ type WelcomeModel struct {
 	inThemesMenu    bool
 	themeOptions    []Command
 	themeSelected   int
-	selectedTheme   string // Store the selected theme ID
-	previousTheme   string // Store theme before entering themes menu
+	selectedTheme   string
+	previousTheme   string
 	IsOnline        bool
 	IsSynced        bool
+	IsSyncing       bool
+	IsBootstrapping bool
 	IsHealthy       bool
 	Network         string
 	DaemonAddress   string
 	BlockHeight     uint64
-	TopoHeight      int64
 	Daemons         []DaemonStatusInfo
 	Version         string
-	errorMsg        string // Error message to display
-	successMsg      string // Success message to display
+	errorMsg        string
+	successMsg      string
 }
 
 // ActionRestore is used internally to trigger restore submenu
@@ -122,6 +139,8 @@ func NewWelcome() WelcomeModel {
 		{Name: "/open", Description: "Open an existing wallet", Action: ActionOpen},
 		{Name: "/create", Description: "Create a new wallet", Action: ActionCreate},
 		{Name: "/restore", Description: "Restore a wallet", Action: ActionRestore},
+		{Name: "/miner", Description: "Start embedded miner", Action: ActionMiner},
+		{Name: "/daemon", Description: "Manage local daemon", Action: ActionDaemon},
 		{Name: "/themes", Description: "Change color theme", Action: ActionThemes},
 		{Name: "/connect", Description: "Connect to a daemon", Action: ActionConnectDaemon},
 		{Name: "/debug", Description: "Open debug console", Action: ActionDebug},
@@ -382,13 +401,14 @@ func (w WelcomeModel) View() string {
 		}
 	} else {
 		metaRows = append(metaRows, renderDaemonSummaryLine(DaemonStatusInfo{
-			IsOnline:    w.IsOnline,
-			IsSynced:    w.IsSynced,
-			IsHealthy:   w.IsHealthy,
-			Network:     w.Network,
-			Address:     w.DaemonAddress,
-			BlockHeight: w.BlockHeight,
-			TopoHeight:  w.TopoHeight,
+			IsOnline:        w.IsOnline,
+			IsSynced:        w.IsSynced,
+			IsSyncing:       w.IsSyncing,
+			IsBootstrapping: w.IsBootstrapping,
+			IsHealthy:       w.IsHealthy,
+			Network:         w.Network,
+			Address:         w.DaemonAddress,
+			BlockHeight:     w.BlockHeight,
 		}))
 	}
 
@@ -564,8 +584,8 @@ func (w WelcomeModel) View() string {
 
 	// Build custom frame with embedded version in top border
 	boxWidth := styles.Width
-	horizontalPadding := 4
-	innerWidth := boxWidth - 2 - (horizontalPadding * 2) // 80 - 2 - 8 = 70
+	horizontalPadding := welcomeFramePadding
+	innerWidth := welcomeFrameInnerWidth
 
 	versionStr := "v" + w.Version
 
@@ -598,6 +618,12 @@ func (w WelcomeModel) View() string {
 			leftPad := (innerWidth - visibleLen) / 2
 			rightPad := innerWidth - visibleLen - leftPad
 			line = strings.Repeat(" ", leftPad) + line + strings.Repeat(" ", rightPad)
+		} else if visibleLen > innerWidth {
+			// Overflow guard: the borders are drawn at boxWidth, so a content
+			// line wider than innerWidth (e.g. a long daemon summary or error
+			// message) would push the side border past the frame. Truncate it
+			// to the inner width; ansi-aware truncation keeps colors intact.
+			line = lipgloss.NewStyle().Inline(true).MaxWidth(innerWidth).Render(line)
 		}
 		sideBorder := borderStyle.Render("│")
 		framedLines = append(framedLines, sideBorder+paddingStr+line+paddingStr+sideBorder)
@@ -640,40 +666,118 @@ func renderDaemonSummaryLine(daemon DaemonStatusInfo) string {
 		networkStyled = styles.SuccessStyle.Render(networkLabel)
 	}
 
+	statusStyled := renderDaemonStateLabel(daemon)
+
+	prefix := styles.MutedStyle.Render("Network:") + networkStyled +
+		" " + statusStyled + "   " + styles.MutedStyle.Render("Daemon:")
+
+	// The daemon address is the flexible segment. Reserve a readable minimum
+	// for it and pick the most detailed height format (block / peer [pct],
+	// block / peer, then just block) that leaves that much room, so the whole
+	// line stays inside the welcome frame.
+	const minAddressWidth = 6
+	heightMax := welcomeFrameInnerWidth - lipgloss.Width(prefix) - lipgloss.Width("   "+styles.MutedStyle.Render("Height:")) - minAddressWidth
+	blockStyled := renderWelcomeHeightFitting(daemon, heightMax)
+
+	addressMax := welcomeFrameInnerWidth - lipgloss.Width(prefix) - lipgloss.Width("   "+styles.MutedStyle.Render("Height:")+blockStyled)
+	if addressMax < minAddressWidth {
+		addressMax = minAddressWidth
+	}
 	addressLabel := "Not configured"
 	if daemon.Address != "" {
-		addressLabel = truncateWelcomeAddress(daemon.Address, 16)
+		addressLabel = truncateWelcomeAddress(daemon.Address, addressMax)
 	}
 
-	var statusStyled string
+	line := prefix + styles.TextStyle.Render(addressLabel) +
+		"   " + styles.MutedStyle.Render("Height:") + blockStyled
+	// Last-resort guard (e.g. a long "Not configured" fallback): never let a
+	// too-wide summary push the frame borders apart.
+	if lipgloss.Width(line) > welcomeFrameInnerWidth {
+		line = lipgloss.NewStyle().Inline(true).MaxWidth(welcomeFrameInnerWidth).Render(line)
+	}
+	return line
+}
+
+// renderDaemonStateLabel renders an explicit daemon state word: Synced,
+// Syncing X%, Bootstrapping X%, Starting, Online, Unhealthy or Stopped.
+func renderDaemonStateLabel(daemon DaemonStatusInfo) string {
 	if daemon.IsOnline && daemon.IsHealthy {
 		if daemon.IsSynced {
-			statusStyled = styles.SuccessStyle.Render("●")
-		} else {
-			statusStyled = styles.WarningStyle.Render("●")
+			return styles.SuccessStyle.Render("● Synced")
 		}
-	} else if daemon.IsOnline && !daemon.IsHealthy {
-		statusStyled = styles.WarningStyle.Render("●")
-	} else {
-		statusStyled = styles.ErrorStyle.Render("●")
-	}
-
-	blockStyled := styles.MutedStyle.Render("-")
-	if daemon.BlockHeight > 0 {
-		blockStr := formatBlockHeight(daemon.BlockHeight)
-		if daemon.IsOnline && daemon.IsHealthy && daemon.IsSynced {
-			blockStyled = styles.SuccessStyle.Render(blockStr)
-		} else if daemon.IsOnline {
-			blockStyled = styles.WarningStyle.Render(blockStr)
-		} else {
-			blockStyled = styles.MutedStyle.Render(blockStr)
+		if daemon.IsBootstrapping {
+			return styles.BootstrappingStyle.Render("● Bootstrapping")
 		}
+		if daemon.IsSyncing {
+			return styles.WarningStyle.Render("● Syncing " + formatSyncPct(daemon.SyncProgress))
+		}
+		if daemon.PeerHeight > 0 || daemon.BlockHeight > 0 {
+			return styles.WarningStyle.Render("● Online")
+		}
+		return styles.WarningStyle.Render("● Starting")
 	}
+	if daemon.IsOnline && !daemon.IsHealthy {
+		return styles.ErrorStyle.Render("● Unhealthy")
+	}
+	return styles.ErrorStyle.Render("○ Stopped")
+}
 
-	return styles.MutedStyle.Render("Network:") + networkStyled +
-		" " + statusStyled +
-		"   " + styles.MutedStyle.Render("Daemon:") + styles.TextStyle.Render(addressLabel) +
-		"   " + styles.MutedStyle.Render("Height:") + blockStyled
+// renderWelcomeHeight renders the daemon height, including the peer/target
+// height when known so a node catching up from genesis is obvious.
+func renderWelcomeHeight(daemon DaemonStatusInfo) string {
+	return renderWelcomeHeightMode(daemon, true, true)
+}
+
+// renderWelcomeHeightFitting picks the most detailed height display that fits
+// in maxWidth: block / peer (pct), then block / peer, then just block.
+func renderWelcomeHeightFitting(daemon DaemonStatusInfo, maxWidth int) string {
+	if maxWidth < 1 {
+		return renderWelcomeHeightMode(daemon, false, false)
+	}
+	if lipgloss.Width(renderWelcomeHeightMode(daemon, true, true)) <= maxWidth {
+		return renderWelcomeHeightMode(daemon, true, true)
+	}
+	if lipgloss.Width(renderWelcomeHeightMode(daemon, true, false)) <= maxWidth {
+		return renderWelcomeHeightMode(daemon, true, false)
+	}
+	return renderWelcomeHeightMode(daemon, false, false)
+}
+
+// renderWelcomeHeightMode renders the daemon height. withPeer includes the
+// peer/target height; withPct includes the sync percentage.
+func renderWelcomeHeightMode(daemon DaemonStatusInfo, withPeer, withPct bool) string {
+	if daemon.BlockHeight == 0 {
+		if daemon.PeerHeight > 0 {
+			if withPeer {
+				return styles.MutedStyle.Render("0 / ") + styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+			}
+			return styles.MutedStyle.Render("0")
+		}
+		return styles.MutedStyle.Render("-")
+	}
+	blockStr := formatUint64(daemon.BlockHeight)
+
+	if daemon.IsSynced {
+		blockStyled := styles.SuccessStyle.Render(blockStr)
+		if withPeer && daemon.PeerHeight > 0 {
+			blockStyled += styles.MutedStyle.Render(" / ") + styles.SuccessStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+		}
+		return blockStyled
+	}
+	if daemon.IsOnline {
+		blockStyled := styles.WarningStyle.Render(blockStr)
+		if withPeer && daemon.PeerHeight > 0 {
+			blockStyled += styles.MutedStyle.Render(" / ") +
+				styles.TextStyle.Render(formatUint64(uint64(daemon.PeerHeight)))
+			if withPct {
+				blockStyled += styles.MutedStyle.Render(" (") +
+					styles.WarningStyle.Render(formatSyncPct(daemon.SyncProgress)) +
+					styles.MutedStyle.Render(")")
+			}
+		}
+		return blockStyled
+	}
+	return styles.MutedStyle.Render(blockStr)
 }
 
 // Action returns the selected action
@@ -695,22 +799,26 @@ func (w *WelcomeModel) ResetInput() {
 }
 
 // SetDaemonStatus sets the daemon connection status
-func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isHealthy bool, network string, address string, blockHeight uint64, topoHeight int64) {
+func (w *WelcomeModel) SetDaemonStatus(isOnline bool, isSynced bool, isBootstrapping bool, isHealthy bool, network string, address string, blockHeight uint64, peerHeight int64, syncProgress float64, isSyncing bool) {
 	w.IsOnline = isOnline
 	w.IsSynced = isSynced
+	w.IsSyncing = isSyncing
+	w.IsBootstrapping = isBootstrapping
 	w.IsHealthy = isHealthy
 	w.Network = network
 	w.DaemonAddress = address
 	w.BlockHeight = blockHeight
-	w.TopoHeight = topoHeight
 	w.Daemons = []DaemonStatusInfo{{
-		IsOnline:    isOnline,
-		IsSynced:    isSynced,
-		IsHealthy:   isHealthy,
-		Network:     network,
-		Address:     address,
-		BlockHeight: blockHeight,
-		TopoHeight:  topoHeight,
+		IsOnline:        isOnline,
+		IsSynced:        isSynced,
+		IsSyncing:       isSyncing,
+		IsBootstrapping: isBootstrapping,
+		IsHealthy:       isHealthy,
+		Network:         network,
+		Address:         address,
+		BlockHeight:     blockHeight,
+		PeerHeight:      peerHeight,
+		SyncProgress:    syncProgress,
 	}}
 }
 
@@ -720,21 +828,23 @@ func (w *WelcomeModel) SetDaemonStatuses(daemons []DaemonStatusInfo) {
 	if len(w.Daemons) == 0 {
 		w.IsOnline = false
 		w.IsSynced = false
+		w.IsSyncing = false
+		w.IsBootstrapping = false
 		w.IsHealthy = false
 		w.Network = ""
 		w.DaemonAddress = ""
 		w.BlockHeight = 0
-		w.TopoHeight = 0
 		return
 	}
 	primary := w.Daemons[0]
 	w.IsOnline = primary.IsOnline
 	w.IsSynced = primary.IsSynced
+	w.IsSyncing = primary.IsSyncing
+	w.IsBootstrapping = primary.IsBootstrapping
 	w.IsHealthy = primary.IsHealthy
 	w.Network = primary.Network
 	w.DaemonAddress = primary.Address
 	w.BlockHeight = primary.BlockHeight
-	w.TopoHeight = primary.TopoHeight
 }
 
 // SetError sets an error message to display on the welcome screen
@@ -814,6 +924,12 @@ func (w *WelcomeModel) HandleMouse(msg tea.MouseClickMsg, windowWidth, windowHei
 					w.inRestoreMenu = true
 					w.restoreSelected = 0
 					w.showMenu = false
+				} else if selectedAction == ActionDaemon {
+					w.showMenu = false
+					w.input.SetValue("")
+					w.input.Reset()
+					w.filtered = []Command{}
+					w.action = selectedAction
 				} else if selectedAction == ActionThemes {
 					w.inThemesMenu = true
 					w.themeSelected = 0

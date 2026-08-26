@@ -11,6 +11,36 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 )
 
+// TestPaletteMinerOpensFromDashboard verifies the global "/" palette can
+// select /miner and transition to PageMiner with the correct return page.
+func TestPaletteMinerOpensFromDashboard(t *testing.T) {
+	m := NewModel()
+	m.page = PageMain
+
+	// Open palette with wallet open
+	m.palette.Open(true)
+
+	// Use exported fields to select /miner (index 2 in filtered list: /open, /close, /miner)
+	m.palette.Selected = 2
+
+	// Send Enter
+	result, _ := m.Update(tea.KeyPressMsg{Text: "enter"})
+	got := result.(Model)
+
+	// Should transition to PageMiner
+	if got.page != PageMiner {
+		t.Fatalf("expected PageMiner, got page %v", got.page)
+	}
+	// Return page should be PageMain (the dashboard)
+	if got.minerReturnPage != PageMain {
+		t.Fatalf("expected minerReturnPage=PageMain, got %v", got.minerReturnPage)
+	}
+	// Palette should be closed
+	if got.palette.IsOpen() {
+		t.Fatal("palette should be closed after selection")
+	}
+}
+
 // TestWantDonateNilWallet verifies the dashboard Donate action does not panic
 // when no wallet is open (the old code dereferenced m.wallet outside the
 // nil-guard).

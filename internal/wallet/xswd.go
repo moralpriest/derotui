@@ -17,7 +17,6 @@ import (
 // before the server-side handler times out and denies the request.
 const XSWDDialogTimeout = 30 * time.Second
 
-// XSWDAppInfo contains dApp info for the TUI authorization dialog
 type XSWDAppInfo struct {
 	Name        string
 	Description string
@@ -25,19 +24,17 @@ type XSWDAppInfo struct {
 	ID          string
 }
 
-// XSWDPermRequest contains permission request info for the TUI dialog
 type XSWDPermRequest struct {
 	AppName string
 	Method  string
 }
 
-// XSWD permission values matching xswd.Permission enum
 const (
-	XSWDPermAsk         = int(xswd.Ask)         // 0
-	XSWDPermAllow       = int(xswd.Allow)       // 1
-	XSWDPermDeny        = int(xswd.Deny)        // 2
-	XSWDPermAlwaysAllow = int(xswd.AlwaysAllow) // 3
-	XSWDPermAlwaysDeny  = int(xswd.AlwaysDeny)  // 4
+	XSWDPermAsk         = 0
+	XSWDPermAllow       = 1
+	XSWDPermDeny        = 2
+	XSWDPermAlwaysAllow = 3
+	XSWDPermAlwaysDeny  = 4
 )
 
 // XSWDBridge wraps the XSWD server and provides a clean interface for the TUI.
@@ -52,28 +49,20 @@ func (b *XSWDBridge) EpochRunning() bool {
 	return b != nil && b.epochRunning
 }
 
-// MsgSender is the interface used to send messages into the TUI event loop.
-// In practice this is *tea.Program but we use an interface to avoid importing
-// bubbletea in the wallet package.
 type MsgSender interface {
 	Send(msg interface{})
 }
 
-// XSWDAuthRequest is sent to the TUI when a dApp requests authorization.
-// The TUI must send true/false on the Response channel.
 type XSWDAuthRequest struct {
 	App      XSWDAppInfo
 	Response chan bool
 }
 
-// XSWDPermissionRequest is sent to the TUI when a dApp method needs permission.
-// The TUI must send an int (XSWDPermAllow..XSWDPermAlwaysDeny) on the Response channel.
 type XSWDPermissionRequest struct {
 	Perm     XSWDPermRequest
 	Response chan int
 }
 
-// XSWDStartedMsg is sent to the TUI when the XSWD server starts or fails.
 type XSWDStartedMsg struct {
 	Bridge *XSWDBridge
 	Err    error
@@ -209,7 +198,10 @@ func (b *XSWDBridge) Stop() {
 	}
 }
 
-// IsRunning returns true if the XSWD server is currently running.
 func (b *XSWDBridge) IsRunning() bool {
-	return b.server != nil && b.server.IsRunning()
+	return b != nil && b.server != nil && b.server.IsRunning()
+}
+
+func XSWDUnavailableError() error {
+	return fmt.Errorf("XSWD is temporarily unavailable with the current embedded daemon dependency set")
 }

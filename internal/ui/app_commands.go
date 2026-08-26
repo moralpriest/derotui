@@ -38,6 +38,11 @@ func (m *Model) connectToDaemon(address string) tea.Cmd {
 			return daemonConnectMsg{address: address, err: err}
 		}
 
+		// Invalidate any stale negative cache for explicit /connect so a
+		// cold public node (dero.geeko.cloud) doesn't fail first try and
+		// succeed second due to 3s DaemonInfoCacheTTL.
+		wallet.InvalidateDaemonInfoCache(normalizedAddress)
+
 		// Query daemon info to detect network type
 		info := wallet.GetDaemonInfo(context.Background(), normalizedAddress)
 		if !info.IsHealthy {
@@ -252,14 +257,11 @@ func (m *Model) applyRegPoll(msg regPollMsg) {
 
 // updateDashboardLogEntries updates the global debug log entries (filtered for high-signal).
 func (m *Model) updateDashboardLogEntries() {
-	buffer := GetLogBuffer()
-	if buffer == nil {
-		return
+	entries := derolog.GetBuffer()
+	if buffer := GetLogBuffer(); buffer != nil {
+		entries = append(entries, buffer.GetEntries()...)
 	}
 
-	entries := buffer.GetEntries()
-
-	// Filter to high-signal entries only
 	var filtered []derolog.LogEntry
 	for _, entry := range entries {
 		if IsHighSignal(entry) {

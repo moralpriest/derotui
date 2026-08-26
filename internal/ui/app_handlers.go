@@ -27,8 +27,32 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		m.welcome.ResetInput()
 	}
 
+	return m.handleCommand(action, m.welcome.SelectedTheme, m.welcome.SetError, m.welcome.SetSuccess)
+}
+
+// handlePaletteAction dispatches a command selected from the global command
+// palette. Theme feedback is dropped (the palette has no status area).
+func (m *Model) handlePaletteAction() tea.Cmd {
+	action := m.palette.Action()
+	m.palette.ResetAction()
+	if action == pages.ActionNone {
+		return nil
+	}
+	noop := func(string) {}
+	return m.handleCommand(action, m.palette.SelectedTheme, noop, noop)
+}
+
+// handleCommand applies a shared command action. The theme callbacks decouple
+// welcome (which shows preview/feedback messages) from the command palette.
+func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() string, setError func(string), setSuccess func(string)) tea.Cmd {
 	switch action {
 	case pages.ActionOpen:
+		// Close any currently open wallet before opening another.
+		if m.wallet != nil {
+			m.shutdownSession(false)
+			m.welcome = pages.NewWelcome()
+			m.welcome.Version = Version
+		}
 		m.isCreating = false
 		m.isRestoringFromSeed = false
 		m.isRestoringFromKey = false
@@ -45,6 +69,11 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		return tea.Batch(m.filePicker.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionCreate:
+		if m.wallet != nil {
+			m.shutdownSession(false)
+			m.welcome = pages.NewWelcome()
+			m.welcome.Version = Version
+		}
 		m.page = PagePassword
 		m.password = pages.NewPassword(pages.PasswordModeCreate)
 		m.password.SetVersion(Version)
@@ -54,6 +83,11 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		return tea.Batch(m.password.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionRestoreSeed:
+		if m.wallet != nil {
+			m.shutdownSession(false)
+			m.welcome = pages.NewWelcome()
+			m.welcome.Version = Version
+		}
 		m.seed = pages.NewSeed(pages.SeedModeInput, "")
 		m.page = PageSeed
 		m.isCreating = false
@@ -62,6 +96,11 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		return tea.Batch(m.seed.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionRestoreKey:
+		if m.wallet != nil {
+			m.shutdownSession(false)
+			m.welcome = pages.NewWelcome()
+			m.welcome.Version = Version
+		}
 		m.keyInput = pages.NewKeyInput()
 		m.page = PageKeyInput
 		m.isCreating = false
@@ -82,6 +121,25 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		m.daemon = pages.NewDaemon(testnet, simulator)
 		m.page = PageDaemon
 		return tea.Batch(m.daemon.Init(), m.setWindowTitleCmd())
+
+	case pages.ActionDaemon:
+		m.page = PageDaemonStatus
+		m.daemonStatus.ArmSettle()
+		diagLog("enter daemon page (ActionDaemon)")
+		return tea.Batch(m.daemonManagerStatusCmd(), m.setWindowTitleCmd())
+
+	case pages.ActionMiner:
+		m.minerReturnPage = m.page
+		m.miner.SetAddress(m.minerAddress())
+		m.page = PageMiner
+		return m.setWindowTitleCmd()
+
+	case pages.ActionCloseWallet:
+		m.shutdownSession(false)
+		m.page = PageWelcome
+		m.welcome = pages.NewWelcome()
+		m.welcome.Version = Version
+		return tea.Batch(m.checkDaemonStatus(), m.setWindowTitleCmd())
 
 	case pages.ActionSwitchNetwork:
 		network := "Mainnet"
@@ -130,27 +188,27 @@ func (m *Model) handleWelcomeAction() tea.Cmd {
 		return tea.Quit
 
 	case pages.ActionPreviewTheme:
-		selectedTheme := m.welcome.SelectedTheme()
-		if selectedTheme != "" {
+		theme := selectedTheme()
+		if theme != "" {
 			// Preview the theme (don't save to config yet)
-			styles.ApplyTheme(selectedTheme)
+			styles.ApplyTheme(theme)
 			applyFilePickerTheme(&m.filePicker)
 		}
 		return nil
 
 	case pages.ActionSetTheme:
-		selectedTheme := m.welcome.SelectedTheme()
-		if selectedTheme != "" {
+		theme := selectedTheme()
+		if theme != "" {
 			// Apply the theme
-			if err := styles.ApplyTheme(selectedTheme); err != nil {
-				m.welcome.SetError("Failed to apply theme: " + err.Error())
+			if err := styles.ApplyTheme(theme); err != nil {
+				setError("Failed to apply theme: " + err.Error())
 			} else {
 				applyFilePickerTheme(&m.filePicker)
 				// Save to config
-				if err := config.SetTheme(selectedTheme); err != nil {
-					m.welcome.SetError("Theme applied but failed to save: " + err.Error())
+				if err := config.SetTheme(theme); err != nil {
+					setError("Theme applied but failed to save: " + err.Error())
 				} else {
-					m.welcome.SetSuccess("Theme changed to " + styles.GetThemeName(selectedTheme))
+					setSuccess("Theme changed to " + styles.GetThemeName(theme))
 				}
 			}
 		}
@@ -349,6 +407,7 @@ func (m *Model) handleDaemonAction() tea.Cmd {
 
 		// Reset confirmed flag to prevent repeated connection attempts
 		m.daemon.ResetConfirmed()
+		m.daemon.SetConnecting(true)
 
 		// Return a command to connect asynchronously
 		return m.connectToDaemon(address)

@@ -114,6 +114,14 @@ func (m Model) generateWindowTitle() string {
 		return base + " - Transaction Details"
 	case PageDaemon:
 		return base + " - Connect Daemon"
+	case PageDaemonStatus:
+		return base + " - Daemon Status"
+	case PageDaemonLogs:
+		return base + " - Daemon Logs"
+	case PageDaemonSettings:
+		return base + " - Daemon Settings"
+	case PageMiner:
+		return base + " - Embedded Miner"
 	case PageIntegratedAddr:
 		if walletName != "" {
 			return base + " - Payment Request - " + walletName

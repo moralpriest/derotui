@@ -84,3 +84,11 @@ tasks:
     cmds:
       - task: vuln
       - task: gosec
+
+  bump-derohe:
+    desc: Refresh replace to DEROFDN/derohe community-dev tip
+    cmds:
+      - go mod edit -replace=github.com/deroproject/derohe=github.com/DEROFDN/derohe@community-dev
+      - go mod tidy
+      - go list -m -f '{{.Path}} {{.Version}}{{if .Replace}} => {{.Replace.Path}} {{.Replace.Version}}{{end}}' github.com/deroproject/derohe
+      - go build ./...
