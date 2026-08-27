@@ -53,6 +53,15 @@ func (m *Model) handleMouseEvent(msg tea.MouseMsg) bool {
 	case PageNames:
 		m.names = m.names.HandleMouse(clickMsg, m.width, m.height)
 		return false
+	case PageTokens:
+		m.tokens = m.tokens.HandleMouse(clickMsg, m.width, m.height)
+		return false
+	case PageTokenSend:
+		m.tokenSend = m.tokenSend.HandleMouse(clickMsg, m.width, m.height)
+		return false
+	case PageTokenHistory:
+		m.tokenHistory = m.tokenHistory.HandleMouse(clickMsg, m.width, m.height)
+		return false
 	case PageIntegratedAddr:
 		m.integratedAddr = m.integratedAddr.HandleMouse(clickMsg, m.width, m.height)
 		return false

@@ -196,3 +196,40 @@ type nameTransferResultMsg struct {
 // shown too long; the TUI dismisses it (denying the request) so it doesn't
 // hang forever.
 type xswdDialogTimeoutMsg struct{}
+
+// tokensLoadedMsg carries loaded tokens.
+type tokensLoadedMsg struct {
+	tokens   []wallet.TokenInfo
+	err      string
+	scanning bool
+	progress string
+}
+
+type tokenScanMsg struct {
+	tokens   []wallet.TokenInfo
+	progress string
+	done     bool
+	err      string
+	retry    bool
+}
+
+// tokenAddResultMsg carries result of adding a token.
+type tokenAddResultMsg struct {
+	scid string
+	err  string
+}
+
+// tokenSendResultMsg carries result of token transfer.
+type tokenSendResultMsg struct {
+	txID   string
+	err    string
+	scid   string
+	amount uint64
+}
+
+// tokenHistoryLoadedMsg carries token transaction history.
+type tokenHistoryLoadedMsg struct {
+	scid string
+	txs  []wallet.TransactionInfo
+	err  string
+}

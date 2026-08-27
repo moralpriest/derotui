@@ -56,3 +56,21 @@ type TransferResult struct {
 	Status string
 	Error  string
 }
+
+// TokenInfo contains token/asset information
+type TokenInfo struct {
+	SCID          string
+	Name          string
+	Ticker        string
+	Decimals      uint64
+	Balance       uint64
+	LockedBalance uint64
+}
+
+// TokenTransferParams contains token transfer parameters
+type TokenTransferParams struct {
+	SCID        string
+	Destination string
+	Amount      uint64
+	Ringsize    uint64
+}

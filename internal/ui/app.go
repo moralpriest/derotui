@@ -109,6 +109,9 @@ const (
 	PageNames          // Registered names management
 	PageNameRegister   // Register a new name
 	PageNameTransfer   // Transfer name ownership
+	PageTokens         // Token management
+	PageTokenSend      // Send token
+	PageTokenHistory   // Token history
 )
 
 // CLIOptions holds command line options
@@ -176,6 +179,9 @@ type Model struct {
 	names          pages.NamesModel
 	nameRegister   pages.NameRegisterModel
 	nameTransfer   pages.NameTransferModel
+	tokens         pages.TokensModel
+	tokenSend      pages.TokenSendModel
+	tokenHistory   pages.TokenHistoryModel
 
 	// State flags
 	isCreating           bool
@@ -233,6 +239,7 @@ type Model struct {
 	lastDaemonRetry    time.Time
 	daemonRetryAfter   time.Duration
 	lastTxRefreshAt    time.Time
+	tokenScanActive    bool
 	daemonManager      *daemonservice.Manager
 	embeddedDaemon     *daemonservice.EmbeddedDaemon
 	rpcMiner           minerservice.RPCBackend
@@ -280,6 +287,9 @@ func NewModel() Model {
 		names:            pages.NewNames(),
 		nameRegister:     pages.NewNameRegister(),
 		nameTransfer:     pages.NewNameTransfer(),
+		tokens:           pages.NewTokens(),
+		tokenSend:        pages.NewTokenSend(),
+		tokenHistory:     pages.NewTokenHistory(),
 		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
 	}
@@ -514,6 +524,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.txDetails.Reset()
 				m.page = PageHistory
 				return m, m.setWindowTitleCmd()
+			case PageTokens:
+				m.tokens.Reset()
+				m.page = PageMain
+				return m, m.setWindowTitleCmd()
+			case PageTokenSend:
+				m.tokenSend.Reset()
+				m.page = PageTokens
+				return m, m.setWindowTitleCmd()
+			case PageTokenHistory:
+				m.tokenHistory.Reset()
+				m.page = PageTokens
+				return m, m.setWindowTitleCmd()
 			}
 		}
 
@@ -600,6 +622,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, m.minerStatsCmd())
 		// Update wallet info periodically
 		if m.wallet != nil {
+			if m.page == PageTokens && !m.tokenScanActive {
+				// Keep discovery alive: the indexer can add candidates after the
+				// initial page load as new blocks are indexed.
+				m.tokenScanActive = true
+				m.tokens.SetScanning(true, "Refreshing HyperGnomon candidates...")
+				cmds = append(cmds, m.discoverTokensCmd())
+			}
 			cmds = append(cmds, m.updateWalletInfo())
 			// Update title to reflect current balance and sync status
 			cmds = append(cmds, m.setWindowTitleCmd())
@@ -1064,6 +1093,72 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.setWindowTitleCmd(), m.loadNamesCmd())
 		}
 
+	case tokenScanMsg:
+		m.tokenScanActive = false
+		m.tokens.SetScanning(true, msg.progress)
+		m.dashboard.IndexerState = "scanning"
+		var scanned, total int
+		if _, err := fmt.Sscanf(msg.progress, "HyperGnomon indexed %d candidates; checked %d assets", &total, &scanned); err == nil {
+			m.dashboard.IndexerTotal = total
+			m.dashboard.IndexerScanned = scanned
+		}
+		if msg.done {
+			m.dashboard.IndexerState = "complete"
+		}
+		if msg.err != "" {
+			m.tokens.SetError(msg.err)
+		}
+		if msg.done {
+			m.tokens.SetLoading(false)
+		}
+		if len(msg.tokens) > 0 {
+			m.tokens.SetTokens(msg.tokens)
+		}
+
+	case tokensLoadedMsg:
+		if m.page != PageTokens {
+			break
+		}
+		if msg.err != "" {
+			m.tokens.SetError(msg.err)
+		} else {
+			m.tokens.SetTokens(msg.tokens)
+		}
+	case tokenAddResultMsg:
+		if msg.err != "" {
+			m.tokens.SetError(msg.err)
+			m.tokens.SetFlash(msg.err, false)
+		} else {
+			m.tokens.SetFlash("Token added: "+msg.scid[:8]+"...", true)
+			m.tokens.SetLoading(true)
+			cmds = append(cmds, m.loadTokensCmd(), m.discoverTokensCmd())
+		}
+	case tokenSendResultMsg:
+		if msg.err != "" {
+			m.tokenSend.SetError(msg.err)
+		} else if msg.txID == "" {
+			m.tokenSend.SetError("Transfer failed: no transaction ID")
+		} else {
+			m.tokenSend.SetSuccess(msg.txID)
+		}
+	case tokenHistoryLoadedMsg:
+		if msg.err != "" {
+			m.tokenHistory.SetTransactions(nil)
+		} else {
+			var txs []pages.Transaction
+			for _, tx := range msg.txs {
+				txs = append(txs, pages.Transaction{
+					TxID:      tx.TxID,
+					Amount:    tx.Amount,
+					Height:    tx.Height,
+					Timestamp: wallet.FormatTimestamp(tx.Timestamp),
+					Incoming:  tx.Incoming,
+					Message:   tx.Message,
+				})
+			}
+			m.tokenHistory.SetTransactions(txs)
+		}
+
 	case passwordChangedMsg:
 		if msg.err != nil {
 			m.password.SetError(msg.err.Error())
@@ -1118,6 +1213,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// page when the initial connect fails; retries only refresh its
 			// offline state and leave the current page alone.
 			m.dashboard.SetFlashMessage(msg.err+" - Wallet opened offline. Use /connect to retry.", false)
+			if m.wallet != nil {
+				m.dashboard.SetWalletInfo(m.wallet.GetFileName(), m.wallet.GetNetworkType(), false, false, false, m.wallet.GetDaemonAddress(), 0, 0)
+			}
 			m.dashboard.SetConnecting(false)
 			// Update wallet info to show offline status
 			cmds = append(cmds, m.updateWalletInfo())
@@ -1309,7 +1407,7 @@ func (m *Model) shutdownSession(quitting bool) {
 // menus so "/" never gets stolen from typed input.
 func paletteEnabled(page Page) bool {
 	switch page {
-	case PageMain, PageMiner, PageNames, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
+	case PageMain, PageMiner, PageNames, PageTokens, PageTokenHistory, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
 		return true
 	default:
 		return false
@@ -1749,6 +1847,112 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 			m.page = m.xswdPrevPage
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
+
+	case PageTokens:
+		m.tokens, cmd = m.tokens.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.tokens.Cancelled() {
+			m.tokens.Reset()
+			m.page = PageMain
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if scid, ok := m.tokens.WantAdd(); ok {
+			m.tokens.ResetActions()
+			cmds = append(cmds, m.addTokenCmd(scid))
+		}
+		if scid, ok := m.tokens.WantSend(); ok {
+			m.tokens.ResetActions()
+			decimals := uint64(0)
+			balance := uint64(0)
+			ticker := ""
+			for i := range m.tokens.Tokens() {
+				if m.tokens.Tokens()[i].SCID == scid {
+					decimals = m.tokens.Tokens()[i].Decimals
+					balance = m.tokens.Tokens()[i].Balance
+					ticker = m.tokens.Tokens()[i].Ticker
+					break
+				}
+			}
+			if balance == 0 {
+				if b, err := m.wallet.GetTokenBalance(scid); err == nil {
+					balance = b
+				}
+			}
+			m.tokenSend = pages.NewTokenSend()
+			m.tokenSend.SetToken(scid, ticker, decimals, balance, 0)
+			if m.wallet != nil {
+				info := m.wallet.GetInfo()
+				m.tokenSend.SetSimulator(m.wallet.IsSimulator())
+				m.tokenSend.SetBalance(balance, info.Balance)
+			}
+			m.page = PageTokenSend
+			cmds = append(cmds, m.tokenSend.Init(), m.setWindowTitleCmd())
+		}
+		if scid, ok := m.tokens.WantHistory(); ok {
+			m.tokens.ResetActions()
+			ticker := ""
+			decimals := uint64(0)
+			for i := range m.tokens.Tokens() {
+				if m.tokens.Tokens()[i].SCID == scid {
+					ticker = m.tokens.Tokens()[i].Ticker
+					decimals = m.tokens.Tokens()[i].Decimals
+					break
+				}
+			}
+			m.tokenHistory = pages.NewTokenHistory()
+			m.tokenHistory.SetToken(scid, ticker, decimals)
+			m.page = PageTokenHistory
+			cmds = append(cmds, m.loadTokenHistoryCmd(scid), m.setWindowTitleCmd())
+		}
+		if scid, ok := m.tokens.WantRemove(); ok {
+			m.tokens.ResetActions()
+			if m.wallet != nil {
+				if err := config.RemoveWalletToken(m.walletFile, scid); err == nil {
+					label := scid
+					if len(label) > 16 {
+						label = label[:16] + "..."
+					}
+					m.tokens.SetFlash("Removed "+label, true)
+					m.tokens.SetLoading(true)
+					cmds = append(cmds, m.loadTokensCmd())
+				}
+			}
+		}
+	case PageTokenSend:
+		m.tokenSend, cmd = m.tokenSend.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.tokenSend.Cancelled() {
+			m.tokenSend.Reset()
+			m.page = PageTokens
+			m.tokens.SetLoading(true)
+			cmds = append(cmds, m.loadTokensCmd(), m.setWindowTitleCmd())
+		}
+		if m.tokenSend.Confirmed() {
+			m.tokenSend.StartProcessing()
+			cmds = append(cmds, m.tokenSend.ProcessingMinDurationCmd(), m.executeTokenTransfer())
+		}
+		if m.tokenSend.ShouldComplete() {
+			m.tokenSend.Reset()
+			m.page = PageTokens
+			m.tokens.SetLoading(true)
+			cmds = append(cmds, m.loadTokensCmd(), m.setWindowTitleCmd())
+		}
+	case PageTokenHistory:
+		m.tokenHistory, cmd = m.tokenHistory.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.tokenHistory.Cancelled() {
+			m.tokenHistory.Reset()
+			m.page = PageTokens
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.tokenHistory.WantDetails() {
+			m.tokenHistory.ResetActions()
+			if tx := m.tokenHistory.SelectedTx(); tx != nil {
+				m.txDetails.SetTransaction(*tx)
+				m.page = PageTxDetails
+				cmds = append(cmds, m.setWindowTitleCmd())
+			}
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1827,6 +2031,15 @@ func (m Model) View() tea.View {
 
 	case PageXSWDPerm:
 		content = m.xswdPerm.View()
+
+	case PageTokens:
+		content = m.tokens.View()
+
+	case PageTokenSend:
+		content = m.tokenSend.View()
+
+	case PageTokenHistory:
+		content = m.tokenHistory.View()
 	}
 
 	// Default dimensions if not yet received

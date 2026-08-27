@@ -3,6 +3,7 @@
 package pages
 
 import (
+	"fmt"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -25,6 +26,7 @@ var (
 	dashboardIntegratedAddrKeys = key.NewBinding(key.WithKeys("r"))
 	dashboardDonateKeys         = key.NewBinding(key.WithKeys("d"))
 	dashboardNamesKeys          = key.NewBinding(key.WithKeys("n"))
+	dashboardTokensKeys         = key.NewBinding(key.WithKeys("t"))
 	dashboardPrevPageKeys       = key.NewBinding(key.WithKeys("left", "["))
 	dashboardNextPageKeys       = key.NewBinding(key.WithKeys("right", "]"))
 	dashboardDownKeys           = key.NewBinding(key.WithKeys("down", "j"))
@@ -51,6 +53,9 @@ type DashboardModel struct {
 	DaemonAddress   string
 	Height          uint64
 	DaemonHeight    uint64
+	IndexerScanned  int
+	IndexerTotal    int
+	IndexerState    string
 
 	// Display
 	Address   string
@@ -70,6 +75,7 @@ type DashboardModel struct {
 	wantIntegratedAddr bool // NEW: generate integrated address
 	wantDonate         bool // NEW: donate to developer
 	wantNames          bool // NEW: registered names management
+	wantTokens         bool // NEW: token management
 
 	// XSWD status
 	xswdRunning bool
@@ -105,6 +111,7 @@ var basePages = []pageInfo{
 			{"Y", "", "QR Code"},
 			{"R", "", "Payment Request"},
 			{"H", "", "History"},
+			{"T", "◈", "Tokens"},
 		},
 	},
 	{
@@ -205,6 +212,8 @@ func (d DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			d.wantDonate = true
 		case key.Matches(msg, dashboardNamesKeys):
 			d.wantNames = true
+		case key.Matches(msg, dashboardTokensKeys):
+			d.wantTokens = true
 
 		// Page navigation with paginator
 		case key.Matches(msg, dashboardPrevPageKeys):
@@ -263,6 +272,8 @@ func (d DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 					d.wantIntegratedAddr = true
 				case "D":
 					d.wantDonate = true
+				case "T":
+					d.wantTokens = true
 				case "X":
 					d.wantXSWD = true
 				}
@@ -348,11 +359,47 @@ func (d DashboardModel) View() string {
 		" " +
 		statusStyle.Render("["+statusLabel+"]")
 
-	heightLine := styles.MutedStyle.Render("Height:  ") + styles.TextStyle.Render(styles.UintToStr(d.Height))
+	var heightValue string
+	if d.DaemonHeight > 0 && d.DaemonHeight != d.Height {
+		if d.Height < d.DaemonHeight {
+			// Wallet behind tip: wallet orange, tip green.
+			heightValue = styles.WarningStyle.Render(styles.UintToStr(d.Height)) +
+				styles.MutedStyle.Render(" / ") +
+				styles.SuccessStyle.Render(styles.UintToStr(d.DaemonHeight))
+		} else {
+			// Wallet ahead of daemon (daemon behind): wallet green, daemon orange.
+			heightValue = styles.SuccessStyle.Render(styles.UintToStr(d.Height)) +
+				styles.MutedStyle.Render(" / ") +
+				styles.WarningStyle.Render(styles.UintToStr(d.DaemonHeight))
+		}
+	} else if d.IsOnline && d.IsSynced {
+		heightValue = styles.SuccessStyle.Render(styles.UintToStr(d.Height))
+	} else if d.IsOnline {
+		heightValue = styles.WarningStyle.Render(styles.UintToStr(d.Height))
+	} else {
+		heightValue = styles.TextStyle.Render(styles.UintToStr(d.Height))
+	}
+	heightLine := styles.MutedStyle.Render("Height:  ") + heightValue
 	daemonLine := styles.MutedStyle.Render("Daemon:  ") + styles.TextStyle.Render(displayDaemon)
-	walletLine := styles.MutedStyle.Render("Wallet:  ") + styles.TextStyle.Render(walletLabel)
+	hyperLine := ""
+	if d.IndexerTotal > 0 || d.IndexerScanned > 0 {
+		indexerStyle := styles.ErrorStyle
+		if d.IndexerState == "scanning" {
+			indexerStyle = styles.WarningStyle
+		} else if d.IndexerState == "complete" {
+			indexerStyle = styles.SuccessStyle
+		}
+		hyperLine = styles.MutedStyle.Render("Index: ") + indexerStyle.Render(fmt.Sprintf("%d/%d SCIDs", d.IndexerScanned, d.IndexerTotal))
+	}
 
-	hudContent := lipgloss.JoinVertical(lipgloss.Left, networkLine, heightLine, daemonLine, walletLine)
+	walletLine := styles.MutedStyle.Render("Wallet:  ") + styles.TextStyle.Render(walletLabel)
+	hudLines := []string{networkLine, heightLine, daemonLine}
+	if hyperLine != "" {
+		hudLines = append(hudLines, hyperLine)
+	}
+	hudLines = append(hudLines, walletLine)
+	hudContent := lipgloss.JoinVertical(lipgloss.Left, hudLines...)
+
 	statusCard := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(styles.ColorBorder).
@@ -802,6 +849,11 @@ func (d DashboardModel) WantNames() bool {
 	return d.wantNames
 }
 
+// WantTokens returns true if user wants to manage tokens
+func (d DashboardModel) WantTokens() bool {
+	return d.wantTokens
+}
+
 // SetXSWDRunning sets the XSWD running status
 func (d *DashboardModel) SetXSWDRunning(running bool) {
 	d.xswdRunning = running
@@ -895,6 +947,7 @@ func (d *DashboardModel) ResetActions() {
 	d.wantIntegratedAddr = false
 	d.wantDonate = false
 	d.wantNames = false
+	d.wantTokens = false
 	// Don't reset tab or selection - let user stay where they were
 }
 
@@ -955,6 +1008,8 @@ func (d DashboardModel) HandleMouse(msg tea.MouseClickMsg, windowWidth, windowHe
 					d.wantDonate = true
 				case "N":
 					d.wantNames = true
+				case "T":
+					d.wantTokens = true
 				case "X":
 					d.wantXSWD = true
 				}

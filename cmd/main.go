@@ -119,8 +119,11 @@ func main() {
 				daemonAddr = wallet.FallbackTestnetDaemon
 			}
 		} else {
-			daemonAddr = wallet.DefaultMainnetDaemon
-			if !wallet.IsDaemonHealthy(context.Background(), daemonAddr) {
+			// Prefer a daemon that is actually synced. A local embedded node
+			// that is still bootstrapping (height 0) answers RPC but cannot
+			// serve the wallet, so fall back to a synced public node instead.
+			daemonAddr = wallet.PreferredMainnetDaemon(context.Background())
+			if daemonAddr == "" {
 				daemonAddr = wallet.FallbackMainnetDaemon
 			}
 		}

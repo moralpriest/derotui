@@ -134,6 +134,18 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		m.page = PageMiner
 		return m.setWindowTitleCmd()
 
+	case pages.ActionTokens:
+		if m.wallet == nil {
+			setError("No wallet open")
+			return nil
+		}
+		m.tokens = pages.NewTokens()
+		m.tokens.SetLoading(true)
+		m.page = PageTokens
+		m.tokenScanActive = true
+		m.tokens.SetScanning(true, "Starting HyperGnomon discovery...")
+		return tea.Batch(m.loadTokensCmd(), m.discoverTokensCmd(), m.setWindowTitleCmd())
+
 	case pages.ActionCloseWallet:
 		m.shutdownSession(false)
 		m.page = PageWelcome
@@ -626,6 +638,17 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 		m.send.SetAddress(donationAddress)
 		m.page = PageSend
 		return tea.Batch(m.send.Init(), m.setWindowTitleCmd())
+	}
+	if m.dashboard.WantTokens() {
+		m.dashboard.ResetActions()
+		if m.wallet == nil {
+			m.dashboard.SetFlashMessage("No wallet open", false)
+			return cmd
+		}
+		m.tokens = pages.NewTokens()
+		m.tokens.SetLoading(true)
+		m.page = PageTokens
+		return tea.Batch(m.loadTokensCmd(), m.setWindowTitleCmd())
 	}
 	return cmd
 }

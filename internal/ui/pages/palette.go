@@ -87,6 +87,7 @@ func buildPaletteCommands(walletOpen bool) []Command {
 	}
 	if walletOpen {
 		commands = append(commands, Command{Name: "/close", Description: "Close current wallet", Action: ActionCloseWallet})
+		commands = append(commands, Command{Name: "/tokens", Description: "Manage tokens", Action: ActionTokens})
 	} else {
 		commands = append(commands,
 			Command{Name: "/create", Description: "Create a new wallet", Action: ActionCreate},

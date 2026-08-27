@@ -20,8 +20,14 @@ func TestPaletteMinerOpensFromDashboard(t *testing.T) {
 	// Open palette with wallet open
 	m.palette.Open(true)
 
-	// Use exported fields to select /miner (index 2 in filtered list: /open, /close, /miner)
-	m.palette.Selected = 2
+	// Select /miner by action rather than a hardcoded index so additions to
+	// the command list (e.g. /tokens) do not break this test.
+	for i, c := range m.palette.Filtered {
+		if c.Action == pages.ActionMiner {
+			m.palette.Selected = i
+			break
+		}
+	}
 
 	// Send Enter
 	result, _ := m.Update(tea.KeyPressMsg{Text: "enter"})

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -731,4 +732,188 @@ func (m *Model) tickCmd() tea.Cmd {
 	return tea.Tick(5*time.Second, func(t time.Time) tea.Msg {
 		return tickMsg(t)
 	})
+}
+
+func (m *Model) loadTokensCmd() tea.Cmd {
+	w := m.wallet
+	walletFile := m.walletFile
+	return func() tea.Msg {
+		if w == nil {
+			return tokensLoadedMsg{err: "wallet not open"}
+		}
+		// Register the known SCID before the first balance snapshot. TokenAdd
+		// updates the wallet's tracked encrypted-balance maps; reading ListTokens
+		// before this call can permanently miss a token after reopening.
+		tracked := config.GetWalletTokens(walletFile)
+		for _, scid := range tracked {
+			_ = w.AddToken(scid)
+		}
+		tokens := w.ListTokens()
+		// Merge tracked tokens from config (zero-balance). The wallet API only
+		// exposes balances for SCIDs registered with TokenAdd; therefore tracked
+		// SCIDs are needed to discover owned tokens after reopening a wallet.
+		seen := make(map[string]bool)
+		for _, t := range tokens {
+			seen[strings.ToLower(t.SCID)] = true
+		}
+		for _, scid := range tracked {
+			scid = strings.ToLower(strings.TrimSpace(scid))
+			if scid == "" || seen[scid] {
+				continue
+			}
+			seen[scid] = true
+			tokens = append(tokens, wallet.TokenInfo{SCID: scid})
+		}
+		// Fetch metadata for each token (best-effort).
+		for i := range tokens {
+			meta, _ := w.GetTokenMetadata(context.Background(), tokens[i].SCID)
+			if meta.Name != "" {
+				tokens[i].Name = meta.Name
+			}
+			if meta.Ticker != "" {
+				tokens[i].Ticker = meta.Ticker
+			}
+			if meta.Decimals != 0 {
+				tokens[i].Decimals = meta.Decimals
+			}
+			if tokens[i].Balance == 0 {
+				if b, _ := w.GetTokenBalance(tokens[i].SCID); b != 0 {
+					tokens[i].Balance = b
+				}
+			}
+		}
+		return tokensLoadedMsg{tokens: tokens}
+	}
+}
+
+// discoverTokensCmd incrementally refreshes cached candidates. The indexer hook
+// is intentionally isolated here so a future HyperGnomon client can provide
+// candidates without coupling the token page to storage details.
+func (m *Model) discoverTokensCmd() tea.Cmd {
+	w := m.wallet
+	walletFile := m.walletFile
+	return func() tea.Msg {
+		if w == nil {
+			return tokenScanMsg{err: "wallet not open", done: true}
+		}
+		if err := w.StartHyperGnomon("", 8); err != nil {
+			return tokenScanMsg{err: "HyperGnomon: " + err.Error(), done: true}
+		}
+		known := config.GetDiscoveredSCIDs(walletFile)
+		if tracked := config.GetWalletTokens(walletFile); len(tracked) > 0 {
+			for _, scid := range tracked {
+				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "tracked"})
+			}
+		}
+		// Always verify manually configured SCIDs too. This makes a known
+		// holding visible even when the indexer has not indexed that contract.
+		for _, scid := range config.GetWalletTokens(walletFile) {
+			known = append(known, config.DiscoveredSCID{SCID: scid, Source: "tracked"})
+		}
+		seen := make(map[string]bool, len(known))
+		for _, candidate := range known {
+			seen[strings.ToLower(strings.TrimSpace(candidate.SCID))] = true
+		}
+		// HyperGnomon may still be warming its database when this command
+		// runs. Read its candidates after startup and merge them into the
+		// reusable registry; never return early from a progress update.
+		for _, scid := range w.HyperGnomonSCIDs() {
+			scid = strings.ToLower(strings.TrimSpace(scid))
+			if scid != "" && !seen[scid] {
+				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "hypergnomon"})
+				seen[scid] = true
+			}
+		}
+		var tokens []wallet.TokenInfo
+		for i, candidate := range known {
+			info, ok := w.DiscoverTokenBalance(candidate.SCID)
+			if ok && info.Balance > 0 {
+				tokens = append(tokens, info)
+			}
+			if i%10 == 0 {
+				// Progress is represented by the dashboard's next periodic update;
+				// keep this command focused on the bounded verification pass.
+				continue
+			}
+		}
+		if len(tokens) > 0 {
+			entries := make([]config.DiscoveredSCID, 0, len(tokens))
+			height := w.GetInfo().DaemonHeight
+			for _, token := range tokens {
+				entries = append(entries, config.DiscoveredSCID{SCID: token.SCID, Source: "wallet", LastCheckedHeight: height, LastSeen: time.Now()})
+			}
+			_ = config.MergeDiscoveredSCIDs(walletFile, entries)
+		}
+		return tokenScanMsg{tokens: tokens, progress: fmt.Sprintf("HyperGnomon indexed %d candidates; checked %d assets", len(known), len(known)), done: false, retry: true}
+	}
+}
+
+func (m *Model) scanTokensCmd() tea.Cmd {
+	w := m.wallet
+	return func() tea.Msg {
+		if w == nil {
+			return tokensLoadedMsg{err: "wallet not open"}
+		}
+		// The wallet API cannot enumerate private token balances. The daemon's
+		// indexed SC list is the discovery source, while balance checks remain
+		// wallet-local and encrypted.
+		daemonAddr := w.GetDaemonAddress()
+		if daemonAddr == "" || daemonAddr == "Not connected" {
+			return tokensLoadedMsg{err: "daemon not connected; token scan unavailable"}
+		}
+		return tokensLoadedMsg{tokens: w.ListTokens(), scanning: false}
+	}
+}
+
+func (m *Model) addTokenCmd(scid string) tea.Cmd {
+	w := m.wallet
+	walletFile := m.walletFile
+	scid = strings.TrimSpace(strings.ToLower(scid))
+	return func() tea.Msg {
+		if w == nil {
+			return tokenAddResultMsg{scid: scid, err: "wallet not open"}
+		}
+		if err := wallet.ValidateSCID(scid); err != nil {
+			return tokenAddResultMsg{scid: scid, err: err.Error()}
+		}
+		if err := w.AddToken(scid); err != nil {
+			return tokenAddResultMsg{scid: scid, err: err.Error()}
+		}
+		if err := config.AddWalletToken(walletFile, scid); err != nil {
+			// Non-fatal: token added to wallet but config save failed.
+			return tokenAddResultMsg{scid: scid, err: ""}
+		}
+		return tokenAddResultMsg{scid: scid}
+	}
+}
+
+func (m *Model) loadTokenHistoryCmd(scid string) tea.Cmd {
+	w := m.wallet
+	return func() tea.Msg {
+		if w == nil {
+			return tokenHistoryLoadedMsg{scid: scid, err: "wallet not open"}
+		}
+		txs := w.GetTokenTransfers(scid, 50)
+		return tokenHistoryLoadedMsg{scid: scid, txs: txs}
+	}
+}
+
+func (m *Model) executeTokenTransfer() tea.Cmd {
+	w := m.wallet
+	scid := m.tokenSend.GetSCID()
+	dest := m.tokenSend.GetAddress()
+	amount := m.tokenSend.GetAmount()
+	ringsize := m.tokenSend.GetRingsize()
+	return func() tea.Msg {
+		if w == nil {
+			return tokenSendResultMsg{err: "wallet not open"}
+		}
+		res := w.TransferToken(wallet.TokenTransferParams{
+			SCID:        scid,
+			Destination: dest,
+			Amount:      amount,
+			Ringsize:    ringsize,
+		})
+		return tokenSendResultMsg{txID: res.TxID, err: res.Error, scid: scid, amount: amount}
+	}
 }

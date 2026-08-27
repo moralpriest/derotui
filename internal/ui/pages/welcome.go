@@ -46,6 +46,7 @@ const (
 	ActionPreviewTheme
 	ActionMiner
 	ActionCloseWallet
+	ActionTokens
 )
 
 // Command represents a slash command

@@ -132,17 +132,30 @@ func classifyDaemonSync(info wallet.DaemonInfo, network string, peerHeight int64
 		info.SyncProgress = syncProgressRatio(height, target)
 		info.IsSyncing = height < target
 		info.IsSynced = height >= target
-		info.IsBootstrapping = info.TopoHeight > 0 && info.TopoHeight != height
+		// Bootstrapping is a far-behind state, not a 1-2 block DAG gap at tip.
+		// At tip topo may be 1-2 ahead of height; that is normal, not bootstrap.
+		if info.IsSynced {
+			info.IsBootstrapping = false
+		} else if info.TopoHeight > 0 && info.TopoHeight != height && target-height > 50 {
+			info.IsBootstrapping = true
+		} else {
+			info.IsBootstrapping = false
+		}
 		return info
 	}
 
-	// No peer/reference height available: keep bootstrapping signal (topo
-	// running ahead of height) but never claim the node is synced.
+	// No peer/reference height available: never claim synced and do not
+	// infer bootstrap from a tiny topo gap (DAG). Only height 0 is a clear
+	// starting/bootstrap signal.
 	info.IsSynced = false
 	info.IsSyncing = false
 	info.PeerHeight = 0
 	info.SyncProgress = 0
-	info.IsBootstrapping = info.TopoHeight > 0 && info.TopoHeight != int64(info.Height)
+	if info.Height == 0 {
+		info.IsBootstrapping = info.IsBootstrapping || info.TopoHeight != 0 || info.IncomingPeers > 0 || info.OutgoingPeers > 0
+	} else {
+		info.IsBootstrapping = false
+	}
 	return info
 }
 

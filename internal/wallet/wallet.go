@@ -110,9 +110,21 @@ const (
 	DefaultMainnetDaemon   = "localhost:10102"
 	DefaultTestnetDaemon   = "localhost:40402"
 	DefaultSimulatorDaemon = "localhost:20000"
-	FallbackMainnetDaemon  = "http://node.derofoundation.org:11012"
+	FallbackMainnetDaemon  = "dero.geeko.cloud:10102"
 	FallbackTestnetDaemon  = "69.30.234.163:40402"
 )
+
+// MainnetPublicDaemons lists public mainnet RPC nodes used as fallbacks when
+// no local daemon is running or the local daemon is still bootstrapping.
+// Entries are probed in order on the non-explicit connection path only.
+var MainnetPublicDaemons = []string{
+	"dero.geeko.cloud:10102",
+	"213.171.208.37:10102",
+	"85.214.253.170:10102",
+	"82.65.143.182:10102",
+	"178.255.169.125:10102",
+	"51.222.86.51:10102",
+}
 
 // sharedHTTPClient is a pooled HTTP client for all daemon RPC requests.
 // Reusing connections saves ~50-100ms per request to the same daemon.
@@ -223,6 +235,7 @@ type Wallet struct {
 	txCacheHeight uint64
 	txCacheTopo   int64
 	txCacheTime   time.Time
+	hyper         *HyperGnomon
 }
 
 // newWallet constructs a Wallet bound to the given network config and equips
@@ -566,6 +579,7 @@ func (w *Wallet) Close() {
 		if err := w.wallet.Save_Wallet(); err != nil {
 			log.Warn("wallet", "close.save_warning", "Failed to save wallet before close", "error", err.Error(), "file", filepath.Base(w.file))
 		}
+		w.CloseHyperGnomon()
 		w.wallet.Close_Encrypted_Wallet()
 		w.wallet = nil
 		if err := backupWalletFile(w.file); err != nil {
@@ -690,9 +704,12 @@ func (w *Wallet) GetInfo() WalletInfo {
 	isOnline := daemonAddr != "" && daemonAddr != "Not connected" && walletapi.IsDaemonOnline()
 	isRegistered := w.wallet.IsRegistered()
 
-	// Use global daemon height function (maintained by background sync)
+	// Use global daemon height function (maintained by background sync).
+	// DAG tip may have topo ahead of height by 1-2 blocks; allow small lag as synced.
 	daemonHeight := uint64(walletapi.Get_Daemon_Height())
-	isSynced := isOnline && height >= daemonHeight && daemonHeight > 0
+	isSynced := isOnline && daemonHeight > 0 && height+2 >= daemonHeight
+
+	syncDbgAppf("GETINFO height=%d daemon=%d isOnline=%v isSynced=%v isReg=%v daemonAddr=%q", height, daemonHeight, isOnline, isSynced, isRegistered, daemonAddr)
 
 	return WalletInfo{
 		Address:       addr,
@@ -856,20 +873,36 @@ func (w *Wallet) GetTransactions(count int) []TransactionInfo {
 	// sync duplicates that work and can block Close() (its no-timeout RPC call
 	// runs in a tracked goroutine that wg.Wait would await).
 	var scid crypto.Hash
-	if !w.wallet.GetMode() && walletapi.IsDaemonOnline() {
-		started := w.syncWalletMemoryAsync()
-		if shouldUseCachedTxsDuringSync(started, w.isSyncInFlight()) {
-			w.txCacheMu.RLock()
-			defer w.txCacheMu.RUnlock()
-			if len(w.txCache) > 0 {
-				result := make([]TransactionInfo, len(w.txCache))
-				copy(result, w.txCache)
-				if len(result) <= count {
-					return result
-				}
-				return result[:count]
+	if walletapi.IsDaemonOnline() {
+		shouldSync := false
+		if !w.wallet.GetMode() {
+			shouldSync = true
+		} else {
+			// Online but wallet is behind daemon tip: the 5s sync_loop can be
+			// stalled by transient RPC failures (public node rate-limit, websocket
+			// reconnect). Kick an extra tracked sync so the HUD does not freeze at
+			// SYNCING while a new block is available.
+			daemonH := uint64(walletapi.Get_Daemon_Height())
+			walletH := w.wallet.Get_Height()
+			if daemonH > 0 && walletH+2 < daemonH {
+				shouldSync = true
 			}
-			return nil
+		}
+		if shouldSync {
+			started := w.syncWalletMemoryAsync()
+			if shouldUseCachedTxsDuringSync(started, w.isSyncInFlight()) {
+				w.txCacheMu.RLock()
+				defer w.txCacheMu.RUnlock()
+				if len(w.txCache) > 0 {
+					result := make([]TransactionInfo, len(w.txCache))
+					copy(result, w.txCache)
+					if len(result) <= count {
+						return result
+					}
+					return result[:count]
+				}
+				return nil
+			}
 		}
 	}
 
@@ -1371,6 +1404,83 @@ func CheckDaemonFast(address string) bool {
 	return true
 }
 
+// findSyncedMainnetDaemon returns the best public mainnet node near the chain
+// tip. The skip address is not probed; it is normally the local candidate
+// that was found behind tip. Probing is bounded so callers (which run under
+// a connect timeout) never wait for the full list. Sync is decided by height
+// proximity, not topo==height (DAG gap is normal at tip).
+func findSyncedMainnetDaemon(ctx context.Context, skip string) (string, DaemonInfo) {
+	normSkip, _ := NormalizeDaemonAddress(skip)
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	var best string
+	var bestInfo DaemonInfo
+	var maxHeight uint64
+	for _, addr := range MainnetPublicDaemons {
+		normalized, err := NormalizeDaemonAddress(addr)
+		if err != nil || normalized == normSkip {
+			continue
+		}
+		info := GetDaemonInfo(probeCtx, normalized)
+		if !info.IsHealthy || info.Height == 0 {
+			continue
+		}
+		if info.Height > maxHeight {
+			maxHeight = info.Height
+			best = normalized
+			bestInfo = info
+		}
+	}
+	if best != "" {
+		return best, bestInfo
+	}
+	return "", DaemonInfo{}
+}
+
+// PreferredMainnetDaemon selects the daemon the wallet should use when the
+// user did not choose one explicitly: the local mainnet daemon when it is
+// healthy and within a few blocks of the public tip, otherwise the best
+// synced public node, otherwise "".
+func PreferredMainnetDaemon(ctx context.Context) string {
+	local := GetDaemonInfo(ctx, DefaultMainnetDaemon)
+	// Find best public height for comparison (bounded probe).
+	bestPublic := ""
+	var bestPublicHeight uint64
+	probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	for _, addr := range MainnetPublicDaemons {
+		normalized, err := NormalizeDaemonAddress(addr)
+		if err != nil {
+			continue
+		}
+		if normalized == DefaultMainnetDaemon {
+			continue
+		}
+		info := GetDaemonInfo(probeCtx, normalized)
+		if !info.IsHealthy || info.Height == 0 {
+			continue
+		}
+		if info.Height > bestPublicHeight {
+			bestPublicHeight = info.Height
+			bestPublic = normalized
+		}
+	}
+	if local.IsHealthy && local.Height > 0 {
+		// Local is usable if it is near tip (allow 3-block lag for DAG) or
+		// if no public node is reachable to establish a tip.
+		if bestPublicHeight == 0 || local.Height+3 >= bestPublicHeight {
+			return DefaultMainnetDaemon
+		}
+	}
+	if bestPublic != "" {
+		return bestPublic
+	}
+	if addr, _ := findSyncedMainnetDaemon(ctx, DefaultMainnetDaemon); addr != "" {
+		return addr
+	}
+	return ""
+}
+
 // ConnectToLocalDaemonFast connects to local daemon that matches wallet's network.
 // Returns connection status and error message if daemon not available.
 func (w *Wallet) ConnectToLocalDaemonFast(knownHealthy bool, knownAddress string) (connected bool, errMsg string) {
@@ -1408,17 +1518,64 @@ func (w *Wallet) ConnectToLocalDaemonFast(knownHealthy bool, knownAddress string
 	}
 	daemon = normalizedDaemon
 
-	// Check if target daemon is healthy BEFORE attempting any switch
-	// This prevents Keep_Connectivity from reconnecting to a non-existent daemon
+	// Check if target daemon is healthy BEFORE attempting any switch.
+	// Prefer a direct RPC probe but do not reject a reachable websocket daemon
+	// merely because GetInfo's optional health fields are absent.
 	_ = knownHealthy
 	info := GetDaemonInfo(context.Background(), daemon)
+	if !info.IsHealthy && CheckDaemonFast(daemon) {
+		info.IsHealthy = true
+		info.IsOnline = true
+	}
+	// On the non-explicit mainnet path, only bind the wallet to a daemon that
+	// is BOTH healthy and caught up. A local daemon that is still bootstrapping
+	// (e.g. a freshly started embedded node at height 0) answers RPC but cannot
+	// serve balances or the chain tip, so fall back to a synced public node.
+	// Health is checked via TCP + HTTP; sync is decided by height proximity to
+	// the public tip (DAG topo gap is normal), not topo==height.
 	if !info.IsHealthy && !explicitDaemon && !w.simulator && !w.testnet {
 		fallbackInfo := GetDaemonInfo(context.Background(), FallbackMainnetDaemon)
-		if fallbackInfo.IsHealthy {
+		if fallbackInfo.IsHealthy && fallbackInfo.Height > 0 {
 			log.Info("daemon", "connect.fallback", "Using fallback mainnet daemon",
 				"from", daemon,
 				"to", FallbackMainnetDaemon)
 			daemon = FallbackMainnetDaemon
+			info = fallbackInfo
+		}
+	}
+	if !explicitDaemon && !w.simulator && !w.testnet {
+		// If local is behind public tip by more than a few blocks, fall back.
+		if info.Height > 0 {
+			// Find max public height for comparison.
+			probeCtx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			var maxPublic uint64
+			for _, addr := range MainnetPublicDaemons {
+				normalized, err := NormalizeDaemonAddress(addr)
+				if err != nil || normalized == daemon {
+					continue
+				}
+				pInfo := GetDaemonInfo(probeCtx, normalized)
+				if pInfo.IsHealthy && pInfo.Height > maxPublic {
+					maxPublic = pInfo.Height
+				}
+			}
+			cancel()
+			if maxPublic > 0 && info.Height+5 < maxPublic {
+				if fallbackAddr, fallbackInfo := findSyncedMainnetDaemon(context.Background(), daemon); fallbackAddr != "" {
+					log.Info("daemon", "connect.synced_fallback", "Using synced public mainnet daemon",
+						"from", daemon,
+						"to", fallbackAddr,
+						"height", fmt.Sprintf("%d", fallbackInfo.Height))
+					daemon = fallbackAddr
+					info = fallbackInfo
+				}
+			}
+		} else if fallbackAddr, fallbackInfo := findSyncedMainnetDaemon(context.Background(), daemon); fallbackAddr != "" {
+			log.Info("daemon", "connect.synced_fallback", "Using synced public mainnet daemon",
+				"from", daemon,
+				"to", fallbackAddr,
+				"height", fmt.Sprintf("%d", fallbackInfo.Height))
+			daemon = fallbackAddr
 			info = fallbackInfo
 		}
 	}
@@ -1481,7 +1638,9 @@ func (w *Wallet) ConnectToLocalDaemonFast(knownHealthy bool, knownAddress string
 	globals.Arguments["--testnet"] = w.testnet
 	globals.InitNetwork()
 
-	// Set the active daemon endpoint globally
+	// walletapi.Connect uses Daemon_Endpoint_Active to select the endpoint;
+	// publish the candidate before connecting (the previous clearing change
+	// made valid connections silently use an empty endpoint).
 	walletapi.Daemon_Endpoint_Active = daemon
 	// Establish WebSocket connection to daemon
 	if err := walletapi.Connect(daemon); err != nil {
@@ -1767,10 +1926,12 @@ func GetDaemonInfo(ctx context.Context, address string) DaemonInfo {
 	info.TopoHeight = result.Result.TopoHeight
 	info.IsOnline = true
 	info.IsHealthy = true
-	height := int64(result.Result.Height)
-	topo := result.Result.TopoHeight
-	info.IsBootstrapping = height > 0 && topo != height
-	info.IsSynced = height > 0 && topo == height
+	// Sync/Bootstrap are decided by classifyDaemonSync using peer/reference
+	// heights. At the RPC layer a node with height>0 is considered provisionally
+	// synced; a 1-2 block topo vs height DAG gap at tip is normal and must not
+	// permanently mark the daemon as bootstrapping/unsynced.
+	info.IsSynced = result.Result.Height > 0
+	info.IsBootstrapping = false
 	info.Testnet = result.Result.Testnet
 	info.Network = result.Result.Network
 	info.Version = result.Result.Version

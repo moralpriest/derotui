@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // WalletNetwork represents the network type for a wallet
@@ -23,14 +24,24 @@ const (
 
 // Config holds application configuration
 type Config struct {
-	LastWallet        string                   `json:"last_wallet"`
-	LastMiningAddress string                   `json:"last_mining_address"` // public payout address for embedded miner
-	WalletNetworks    map[string]WalletNetwork `json:"wallet_networks"`     // wallet path -> network
-	Theme             string                   `json:"theme"`               // selected theme ID
-	Daemon            DaemonSettings           `json:"daemon"`
+	LastWallet        string                      `json:"last_wallet"`
+	LastMiningAddress string                      `json:"last_mining_address"` // public payout address for embedded miner
+	WalletNetworks    map[string]WalletNetwork    `json:"wallet_networks"`     // wallet path -> network
+	WalletTokens      map[string][]string         `json:"wallet_tokens"`       // wallet path -> tracked token SCIDs
+	DiscoveredAssets  map[string][]DiscoveredSCID `json:"discovered_assets"`   // wallet path -> reusable discovered SCIDs
+	Theme             string                      `json:"theme"`               // selected theme ID
+	Daemon            DaemonSettings              `json:"daemon"`
 }
 
 // DaemonSettings holds local daemon launch settings.
+// DiscoveredSCID is a refreshable cache entry for an on-chain asset candidate.
+type DiscoveredSCID struct {
+	SCID              string    `json:"scid"`
+	Source            string    `json:"source"`
+	LastCheckedHeight uint64    `json:"last_checked_height"`
+	LastSeen          time.Time `json:"last_seen"`
+}
+
 type DaemonSettings struct {
 	Mode              string   `json:"mode"`
 	DownloadSource    string   `json:"download_source"`
@@ -89,6 +100,12 @@ func loadUnlocked() Config {
 	// Ensure map is initialized
 	if cfg.WalletNetworks == nil {
 		cfg.WalletNetworks = make(map[string]WalletNetwork)
+	}
+	if cfg.WalletTokens == nil {
+		cfg.WalletTokens = make(map[string][]string)
+	}
+	if cfg.DiscoveredAssets == nil {
+		cfg.DiscoveredAssets = make(map[string][]DiscoveredSCID)
 	}
 	cfg.Daemon = normalizeDaemonSettings(cfg.Daemon)
 	return cfg
@@ -422,6 +439,174 @@ func GetWalletNetwork(walletPath string) WalletNetwork {
 	}
 
 	return ""
+}
+
+// GetWalletTokens returns the tracked token SCIDs for a wallet (empty if none).
+func GetWalletTokens(walletPath string) []string {
+	cfg := Load()
+	if cfg.WalletTokens == nil {
+		return nil
+	}
+	absPath, err := filepath.Abs(walletPath)
+	if err != nil {
+		absPath = walletPath
+	}
+	absPath = filepath.Clean(absPath)
+	if !isWalletPathFormatValid(absPath) {
+		return nil
+	}
+	if info, err := os.Stat(absPath); err != nil || info.IsDir() {
+		return nil
+	}
+	if tokens, ok := cfg.WalletTokens[absPath]; ok {
+		out := make([]string, len(tokens))
+		copy(out, tokens)
+		return out
+	}
+	return nil
+}
+
+// SetWalletTokens replaces the tracked token SCIDs for a wallet.
+func SetWalletTokens(walletPath string, scids []string) error {
+	if !isWalletPathFormatValid(walletPath) {
+		return fmt.Errorf("invalid wallet path for token mapping: %q", walletPath)
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg := loadUnlocked()
+	if cfg.WalletTokens == nil {
+		cfg.WalletTokens = make(map[string][]string)
+	}
+	absPath, err := filepath.Abs(walletPath)
+	if err != nil {
+		absPath = walletPath
+	}
+	absPath = filepath.Clean(absPath)
+	seen := make(map[string]bool)
+	var deduped []string
+	for _, s := range scids {
+		s = strings.TrimSpace(strings.ToLower(s))
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		deduped = append(deduped, s)
+	}
+	cfg.WalletTokens[absPath] = deduped
+	return saveUnlocked(cfg)
+}
+
+// AddWalletToken adds a token SCID to the tracked list for a wallet.
+func AddWalletToken(walletPath string, scid string) error {
+	scid = strings.TrimSpace(strings.ToLower(scid))
+	if scid == "" {
+		return fmt.Errorf("empty SCID")
+	}
+	if len(scid) != 64 {
+		return fmt.Errorf("SCID must be 64 hex characters")
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg := loadUnlocked()
+	if cfg.WalletTokens == nil {
+		cfg.WalletTokens = make(map[string][]string)
+	}
+	absPath, err := filepath.Abs(walletPath)
+	if err != nil {
+		absPath = walletPath
+	}
+	absPath = filepath.Clean(absPath)
+	if !isWalletPathFormatValid(absPath) {
+		return fmt.Errorf("invalid wallet path for token mapping: %q", walletPath)
+	}
+	list := cfg.WalletTokens[absPath]
+	for _, existing := range list {
+		if strings.EqualFold(existing, scid) {
+			return nil
+		}
+	}
+	cfg.WalletTokens[absPath] = append(list, scid)
+	return saveUnlocked(cfg)
+}
+
+// RemoveWalletToken removes a token SCID from the tracked list for a wallet.
+func RemoveWalletToken(walletPath string, scid string) error {
+	scid = strings.TrimSpace(strings.ToLower(scid))
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg := loadUnlocked()
+	if cfg.WalletTokens == nil {
+		return nil
+	}
+	absPath, err := filepath.Abs(walletPath)
+	if err != nil {
+		absPath = walletPath
+	}
+	absPath = filepath.Clean(absPath)
+	list, ok := cfg.WalletTokens[absPath]
+	if !ok {
+		return nil
+	}
+	var filtered []string
+	for _, s := range list {
+		if !strings.EqualFold(s, scid) {
+			filtered = append(filtered, s)
+		}
+	}
+	if len(filtered) == 0 {
+		delete(cfg.WalletTokens, absPath)
+	} else {
+		cfg.WalletTokens[absPath] = filtered
+	}
+	return saveUnlocked(cfg)
+}
+
+// GetDiscoveredSCIDs returns the cached candidate SCIDs for a wallet.
+func GetDiscoveredSCIDs(walletPath string) []DiscoveredSCID {
+	cfg := Load()
+	path, err := filepath.Abs(walletPath)
+	if err != nil {
+		path = walletPath
+	}
+	entries := cfg.DiscoveredAssets[filepath.Clean(path)]
+	out := make([]DiscoveredSCID, len(entries))
+	copy(out, entries)
+	return out
+}
+
+// MergeDiscoveredSCIDs updates the reusable asset cache without removing prior candidates.
+func MergeDiscoveredSCIDs(walletPath string, entries []DiscoveredSCID) error {
+	if !isWalletPathFormatValid(walletPath) {
+		return fmt.Errorf("invalid wallet path for discovered assets: %q", walletPath)
+	}
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg := loadUnlocked()
+	if cfg.DiscoveredAssets == nil {
+		cfg.DiscoveredAssets = make(map[string][]DiscoveredSCID)
+	}
+	path, err := filepath.Abs(walletPath)
+	if err != nil {
+		path = walletPath
+	}
+	path = filepath.Clean(path)
+	bySCID := make(map[string]DiscoveredSCID)
+	for _, entry := range cfg.DiscoveredAssets[path] {
+		bySCID[strings.ToLower(entry.SCID)] = entry
+	}
+	for _, entry := range entries {
+		entry.SCID = strings.ToLower(strings.TrimSpace(entry.SCID))
+		if entry.SCID == "" {
+			continue
+		}
+		bySCID[entry.SCID] = entry
+	}
+	merged := make([]DiscoveredSCID, 0, len(bySCID))
+	for _, entry := range bySCID {
+		merged = append(merged, entry)
+	}
+	cfg.DiscoveredAssets[path] = merged
+	return saveUnlocked(cfg)
 }
 
 // GetTheme returns the selected theme ID (defaults to "neon" if not set)

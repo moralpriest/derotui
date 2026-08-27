@@ -97,8 +97,14 @@ func TestPaletteEnterSelectsMiner(t *testing.T) {
 	p := NewPalette()
 	p.Open(true)
 
-	// filtered: /open(0), /close(1), /miner(2), ...
-	p.Selected = 2 // /miner
+	// Select the /miner entry by action rather than a hardcoded index so
+	// additions to the command list (e.g. /tokens) do not break this test.
+	for i, c := range p.commands {
+		if c.Action == ActionMiner {
+			p.Selected = i
+			break
+		}
+	}
 
 	// Simulate Enter key
 	p, _ = p.Update(tea.KeyPressMsg{Text: "enter"})
