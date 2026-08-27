@@ -5,12 +5,23 @@ package ui
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
 
 	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 )
+
+func hudValueCol(line, label string) int {
+	i := strings.Index(line, label)
+	if i < 0 {
+		return 0
+	}
+	rest := line[i+len(label):]
+	spaces := len(rest) - len(strings.TrimLeft(rest, " "))
+	return utf8.RuneCountInString(line[:i]) + utf8.RuneCountInString(label) + spaces
+}
 
 // TestDashboardFrameFitsWidth renders the dashboard (as shown after navigating
 // back from the /daemon page) and asserts the outer frame never exceeds the
@@ -72,5 +83,37 @@ func TestDashboardFrameFitsWidth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestDashboardHUDIndexAlignsWithHeight(t *testing.T) {
+	d := pages.NewDashboard()
+	d.SetWalletInfo("main.db", "Mainnet", true, true, true, "127.0.0.1:10102", 7_525_921, 7_525_921)
+	d.IndexerTotal = 42
+	d.IndexerState = "scanning"
+	plain := stripANSI(d.View())
+	heightCol, indexCol := 0, 0
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "│") && strings.Contains(line, "Height:") && heightCol == 0 {
+			heightCol = hudValueCol(line, "Height:")
+		}
+		if strings.Contains(line, "│") && strings.Contains(line, "Index:") && indexCol == 0 {
+			indexCol = hudValueCol(line, "Index:")
+		}
+	}
+	if heightCol == 0 || indexCol == 0 {
+		t.Fatalf("missing HUD labels height=%d index=%d\n%s", heightCol, indexCol, plain)
+	}
+	if heightCol != indexCol {
+		t.Fatalf("Index value col %d != Height value col %d\n%s", indexCol, heightCol, plain)
+	}
+}
+
+func TestDashboardHUDIndexShownWithoutTokenScan(t *testing.T) {
+	d := pages.NewDashboard()
+	d.SetWalletInfo("main.db", "Mainnet", true, true, true, "127.0.0.1:10102", 1, 1)
+	plain := stripANSI(d.View())
+	if !strings.Contains(plain, "Index:") {
+		t.Fatalf("Index row missing on wallet dashboard:\n%s", plain)
 	}
 }

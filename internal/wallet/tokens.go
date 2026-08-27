@@ -17,16 +17,21 @@ import (
 	"github.com/deroproject/derohe/cryptography/crypto"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/rpc"
+	"github.com/deroproject/derohe/walletapi"
 )
 
-// tokenCodeNameRe matches Function Name() String ... RETURN "..."
-var tokenCodeNameRe = regexp.MustCompile(`(?i)Function\s+Name\s*\(\s*\)\s*String[\s\S]*?RETURN[^\n"]*"([^"]+)"`)
+var (
+	tokenFnRe          = regexp.MustCompile(`(?is)Function\s+(Name|Symbol|Ticker|Decimals)\s*\(\s*\)\s*(String|Uint64)(.*?)End Function`)
+	tokenReturnLoadRe  = regexp.MustCompile(`(?i)RETURN\s+LOAD\s*\(\s*"([^"]+)"\s*\)`)
+	tokenReturnQuoteRe = regexp.MustCompile(`(?i)RETURN\s+"([^"]+)"`)
+	tokenReturnUintRe  = regexp.MustCompile(`(?i)RETURN\s+(\d+)`)
+)
 
-// tokenCodeTickerRe matches Function Ticker() String ... RETURN "..."
-var tokenCodeTickerRe = regexp.MustCompile(`(?i)Function\s+Ticker\s*\(\s*\)\s*String[\s\S]*?RETURN[^\n"]*"([^"]+)"`)
-
-// tokenCodeDecimalsRe matches Function Decimals() Uint64 ... RETURN <number>
-var tokenCodeDecimalsRe = regexp.MustCompile(`(?i)Function\s+Decimals\s*\(\s*\)\s*Uint64[\s\S]*?RETURN[^\d]*(\d+)`)
+var tokenMetaKeys = []string{
+	"name", "Name", "symbol", "Symbol", "ticker", "Ticker",
+	"decimals", "Decimals", "n", "s", "d",
+	"metadata", "var_header_name", "nameHdr",
+}
 
 // ValidateSCID checks whether s is a 64-char hex SCID.
 func ValidateSCID(s string) error {
@@ -168,10 +173,11 @@ func (w *Wallet) AddToken(scidStr string) error {
 	return nil
 }
 
-// GetTokenMetadata fetches token name/ticker/decimals via DERO.GetSC code parsing.
-// Returns a TokenInfo with SCID populated and metadata filled where available.
-// If daemon is unreachable or parsing fails, it returns the SCID with defaults
-// (decimals=0) and no error, so callers can still display the token.
+// GetTokenMetadata fetches token name/ticker/decimals via DERO.GetSC.
+// It parses code (Name/Symbol/Ticker/Decimals) and falls back to targeted
+// key lookups (keysstring) for tokens that store metadata in state. Using
+// keysstring avoids variables:true which dumps the entire SC tree and times
+// out on popular tokens.
 func (w *Wallet) GetTokenMetadata(ctx context.Context, scidStr string) (TokenInfo, error) {
 	info := TokenInfo{SCID: strings.TrimSpace(scidStr)}
 	if err := ValidateSCID(info.SCID); err != nil {
@@ -179,59 +185,224 @@ func (w *Wallet) GetTokenMetadata(ctx context.Context, scidStr string) (TokenInf
 	}
 	daemonAddr := w.GetDaemonAddress()
 	if daemonAddr == "" || daemonAddr == "Not connected" {
-		return info, nil
+		if walletapi.Daemon_Endpoint_Active != "" {
+			daemonAddr = walletapi.Daemon_Endpoint_Active
+		} else {
+			if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+				info.Name, info.Ticker, info.Decimals = n, t, d
+				return info, nil
+			}
+			return info, nil
+		}
 	}
-	url, err := daemonRPCURL(daemonAddr)
+	rpcURL, err := daemonRPCURL(daemonAddr)
 	if err != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
 		return info, nil
 	}
-	payload := fmt.Sprintf(`{"jsonrpc":"2.0","id":"1","method":"DERO.GetSC","params":{"scid":"%s","code":true,"variables":false}}`, info.SCID)
+	// Targeted lookup: code + specific keys. Order matters for ValuesString.
+	keys := tokenMetaKeys
+	params := rpc.GetSC_Params{
+		SCID:       info.SCID,
+		Code:       true,
+		KeysString: keys,
+	}
+	payloadObj := map[string]interface{}{
+		"jsonrpc": "2.0",
+		"id":      "1",
+		"method":  "DERO.GetSC",
+		"params":  params,
+	}
+	bodyBytes, err := json.Marshal(payloadObj)
+	if err != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
+		return info, nil
+	}
 	reqCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, "POST", url, strings.NewReader(payload))
+	req, err := http.NewRequestWithContext(reqCtx, "POST", rpcURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
 		return info, nil
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := sharedHTTPClient.Do(req)
 	if err != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
 		return info, nil
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
 		return info, nil
 	}
 	var rpcResp struct {
-		Result struct {
-			Code string `json:"code"`
-		} `json:"result"`
-		Error *struct {
+		Result rpc.GetSC_Result `json:"result"`
+		Error  *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
 		return info, nil
 	}
 	if rpcResp.Error != nil {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
 		return info, nil
 	}
-	code := rpcResp.Result.Code
-	if code == "" {
-		return info, nil
+	vals := map[string]string{}
+	for i, k := range keys {
+		if i >= len(rpcResp.Result.ValuesString) {
+			break
+		}
+		raw := rpcResp.Result.ValuesString[i]
+		if raw == "" || strings.HasPrefix(raw, "NOT AVAILABLE") {
+			continue
+		}
+		if s := decodeSCString(raw); s != "" {
+			vals[strings.ToLower(k)] = s
+		} else {
+			vals[strings.ToLower(k)] = strings.TrimSpace(raw)
+		}
 	}
-	if m := tokenCodeNameRe.FindStringSubmatch(code); len(m) == 2 {
-		info.Name = m[1]
-	}
-	if m := tokenCodeTickerRe.FindStringSubmatch(code); len(m) == 2 {
-		info.Ticker = m[1]
-	}
-	if m := tokenCodeDecimalsRe.FindStringSubmatch(code); len(m) == 2 {
-		if d, err := strconv.ParseUint(m[1], 10, 64); err == nil {
-			info.Decimals = d
+	applyTokenMetadata(&info, rpcResp.Result.Code, vals)
+	if info.Name == "" && info.Ticker == "" {
+		if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok {
+			if n != "" {
+				info.Name = n
+			}
+			if t != "" {
+				info.Ticker = t
+			}
+			if d != 0 && info.Decimals == 0 {
+				info.Decimals = d
+			}
 		}
 	}
 	return info, nil
+}
+
+func applyTokenMetadata(info *TokenInfo, code string, vals map[string]string) {
+	loadNameKey, loadTickerKey := "", ""
+	for _, m := range tokenFnRe.FindAllStringSubmatch(code, -1) {
+		if len(m) < 4 {
+			continue
+		}
+		fn, body := strings.ToLower(m[1]), m[3]
+		if lm := tokenReturnLoadRe.FindStringSubmatch(body); len(lm) == 2 {
+			switch fn {
+			case "name":
+				loadNameKey = lm[1]
+			case "symbol", "ticker":
+				loadTickerKey = lm[1]
+			}
+			continue
+		}
+		if qm := tokenReturnQuoteRe.FindStringSubmatch(body); len(qm) == 2 {
+			switch fn {
+			case "name":
+				if info.Name == "" {
+					info.Name = qm[1]
+				}
+			case "symbol", "ticker":
+				if info.Ticker == "" {
+					info.Ticker = qm[1]
+				}
+			}
+			continue
+		}
+		if fn == "decimals" {
+			if um := tokenReturnUintRe.FindStringSubmatch(body); len(um) == 2 && info.Decimals == 0 {
+				if d, err := strconv.ParseUint(um[1], 10, 64); err == nil {
+					info.Decimals = d
+				}
+			}
+		}
+	}
+	setFromVals := func(keys []string, dst *string) {
+		if *dst != "" {
+			return
+		}
+		for _, k := range keys {
+			if v := strings.TrimSpace(vals[k]); v != "" && !strings.HasPrefix(v, "NOT AVAILABLE") {
+				*dst = v
+				return
+			}
+		}
+	}
+	if loadNameKey != "" && info.Name == "" {
+		if v := strings.TrimSpace(vals[strings.ToLower(loadNameKey)]); v != "" {
+			info.Name = v
+		}
+	}
+	if loadTickerKey != "" && info.Ticker == "" {
+		if v := strings.TrimSpace(vals[strings.ToLower(loadTickerKey)]); v != "" {
+			info.Ticker = v
+		}
+	}
+	setFromVals([]string{"name", "var_header_name", "namehdr", "n"}, &info.Name)
+	setFromVals([]string{"symbol", "ticker", "s"}, &info.Ticker)
+	if info.Decimals == 0 {
+		for _, k := range []string{"decimals", "d"} {
+			if v := strings.TrimSpace(vals[k]); v != "" {
+				if d, err := strconv.ParseUint(v, 10, 64); err == nil {
+					info.Decimals = d
+					break
+				}
+			}
+		}
+	}
+	if meta := vals["metadata"]; meta != "" && (info.Name == "" || info.Ticker == "") {
+		var blob map[string]interface{}
+		if err := json.Unmarshal([]byte(meta), &blob); err == nil {
+			if info.Name == "" {
+				if s, _ := blob["name"].(string); strings.TrimSpace(s) != "" {
+					info.Name = strings.TrimSpace(s)
+				}
+			}
+			if info.Ticker == "" {
+				if s, _ := blob["symbol"].(string); strings.TrimSpace(s) != "" {
+					info.Ticker = strings.TrimSpace(s)
+				}
+			}
+		}
+	}
+}
+
+func decodeSCString(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.HasPrefix(s, "NOT AVAILABLE") {
+		return ""
+	}
+	if b, err := hex.DecodeString(s); err == nil {
+		decoded := string(b)
+		printable := true
+		for _, r := range decoded {
+			if r < 32 || r == 127 {
+				printable = false
+				break
+			}
+		}
+		if printable && strings.TrimSpace(decoded) != "" {
+			return strings.TrimSpace(decoded)
+		}
+	}
+	return s
 }
 
 // TransferToken sends a token to a destination.

@@ -197,6 +197,7 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		return m.toggleDebugLoggingCmd(true)
 
 	case pages.ActionExit:
+		m.closeHyperGnomon()
 		return tea.Quit
 
 	case pages.ActionPreviewTheme:

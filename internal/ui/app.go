@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -211,6 +212,7 @@ type Model struct {
 	// Cached daemon status (from welcome page checks)
 	cachedDaemonHealthy bool
 	cachedDaemonAddress string
+	cachedDaemonNetwork string
 
 	// Sticky daemon selection set by explicit /connect.
 	// This survives wallet transitions so create/open/restore can keep using
@@ -248,6 +250,8 @@ type Model struct {
 	pendingPrune       bool
 	pruneAppliedOnce   bool
 	applyingPrune      bool
+	hyperGnomon        *wallet.HyperGnomon
+	hyperMu            *sync.Mutex
 }
 
 type pendingOutgoingTx struct {
@@ -292,6 +296,7 @@ func NewModel() Model {
 		tokenHistory:     pages.NewTokenHistory(),
 		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
+		hyperMu:          &sync.Mutex{},
 	}
 	m.welcome.Version = Version
 	m.password.SetVersion(Version)
@@ -649,6 +654,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Refresh daemon status on welcome page
 			cmds = append(cmds, m.checkDaemonStatus())
 		}
+		// HyperGnomon: keep HUD counts fresh and ensure indexer starts at launch
+		// without requiring a wallet or an open token menu.
+		m.updateHyperDashboard()
+		if m.hyperGnomon == nil || !m.hyperGnomon.IsRunning() {
+			if m.cachedDaemonHealthy && m.cachedDaemonAddress != "" {
+				m.ensureHyperGnomon(m.cachedDaemonAddress, m.cachedDaemonNetwork)
+				m.updateHyperDashboard()
+			} else if m.wallet != nil {
+				endpoint := m.wallet.GetDaemonAddress()
+				if endpoint != "" && endpoint != "Not connected" && !m.Opts.Offline {
+					netLabel := "Mainnet"
+					nt := strings.ToLower(m.wallet.GetNetworkType())
+					if nt == "simulator" {
+						netLabel = "Simulator"
+					} else if nt == "testnet" {
+						netLabel = "Testnet"
+					}
+					m.ensureHyperGnomon(endpoint, netLabel)
+					m.updateHyperDashboard()
+				}
+			}
+		}
 		cmds = append(cmds, m.tickCmd())
 
 	case daemonStatusMsg:
@@ -671,13 +698,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.cachedDaemonHealthy = false
 		m.cachedDaemonAddress = ""
+		m.cachedDaemonNetwork = ""
 		if len(msg.daemons) > 0 {
 			primary := msg.daemons[0]
 			m.cachedDaemonHealthy = primary.isOnline && primary.isHealthy
 			m.cachedDaemonAddress = primary.address
+			m.cachedDaemonNetwork = primary.network
 		}
 
 		m.fillIntegratorFallback()
+		if len(msg.daemons) > 0 {
+			primary := msg.daemons[0]
+			if primary.isOnline && primary.isHealthy {
+				m.ensureHyperGnomon(primary.address, primary.network)
+				m.updateHyperDashboard()
+			}
+		}
 
 	case daemonManagerMsg:
 		if msg.err != "" {
@@ -686,6 +722,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastEmbeddedError = ""
 		}
 		m.applyDaemonManagerMsg(msg)
+		if msg.info.IsOnline && msg.info.IsHealthy {
+			addr := msg.snapshot.RPCBind
+			if addr == "" {
+				addr = m.cachedDaemonAddress
+			}
+			if addr != "" {
+				m.ensureHyperGnomon(addr, msg.info.Network)
+				m.updateHyperDashboard()
+			}
+		}
 
 	case daemonInstallPreviewMsg:
 		m.daemonStatus.Downloading = false
@@ -872,7 +918,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.daemonRetryAfter = initialDaemonRetryInterval
 			m.lastTxRefreshAt = time.Time{}
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
+			m.dashboard.IndexerState = "scanning"
 			m.page = PageMain
+			if addr := m.preferredDaemonAddress(); addr != "" {
+				m.ensureHyperGnomon(addr, network)
+			}
+			m.updateHyperDashboard()
 			// Don't call updateWalletInfo() here - wait for daemon connection to complete
 			// to avoid showing stale daemon address from previous wallet
 			cmds = append(cmds, m.connectWalletToDaemonAsync()) // Connect async
@@ -1096,15 +1147,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenScanMsg:
 		m.tokenScanActive = false
 		m.tokens.SetScanning(true, msg.progress)
-		m.dashboard.IndexerState = "scanning"
-		var scanned, total int
-		if _, err := fmt.Sscanf(msg.progress, "HyperGnomon indexed %d candidates; checked %d assets", &total, &scanned); err == nil {
-			m.dashboard.IndexerTotal = total
-			m.dashboard.IndexerScanned = scanned
-		}
-		if msg.done {
-			m.dashboard.IndexerState = "complete"
-		}
+		m.updateHyperDashboard()
 		if msg.err != "" {
 			m.tokens.SetError(msg.err)
 		}
@@ -1112,7 +1155,39 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tokens.SetLoading(false)
 		}
 		if len(msg.tokens) > 0 {
-			m.tokens.SetTokens(msg.tokens)
+			// Merge discovered tokens with existing list to preserve names
+			// fetched by loadTokensCmd. discoverTokensCmd now fetches metadata,
+			// but loadTokensCmd may have raced and already set names.
+			existing := m.tokens.Tokens()
+			bySCID := make(map[string]wallet.TokenInfo, len(existing)+len(msg.tokens))
+			for _, t := range existing {
+				bySCID[strings.ToLower(t.SCID)] = t
+			}
+			for _, t := range msg.tokens {
+				key := strings.ToLower(t.SCID)
+				if cur, ok := bySCID[key]; ok {
+					if t.Name != "" {
+						cur.Name = t.Name
+					}
+					if t.Ticker != "" {
+						cur.Ticker = t.Ticker
+					}
+					if t.Decimals != 0 {
+						cur.Decimals = t.Decimals
+					}
+					if t.Balance != 0 {
+						cur.Balance = t.Balance
+					}
+					bySCID[key] = cur
+				} else {
+					bySCID[key] = t
+				}
+			}
+			merged := make([]wallet.TokenInfo, 0, len(bySCID))
+			for _, v := range bySCID {
+				merged = append(merged, v)
+			}
+			m.tokens.SetTokens(merged)
 		}
 
 	case tokensLoadedMsg:
@@ -1122,7 +1197,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != "" {
 			m.tokens.SetError(msg.err)
 		} else {
-			m.tokens.SetTokens(msg.tokens)
+			// Merge to preserve names discovered by the concurrent discoverTokensCmd
+			existing := m.tokens.Tokens()
+			if len(existing) == 0 {
+				m.tokens.SetTokens(msg.tokens)
+			} else {
+				bySCID := make(map[string]wallet.TokenInfo, len(existing)+len(msg.tokens))
+				for _, t := range existing {
+					bySCID[strings.ToLower(t.SCID)] = t
+				}
+				for _, t := range msg.tokens {
+					key := strings.ToLower(t.SCID)
+					if cur, ok := bySCID[key]; ok {
+						if cur.Name == "" && t.Name != "" {
+							cur.Name = t.Name
+						}
+						if cur.Ticker == "" && t.Ticker != "" {
+							cur.Ticker = t.Ticker
+						}
+						if cur.Decimals == 0 && t.Decimals != 0 {
+							cur.Decimals = t.Decimals
+						}
+						if t.Balance != 0 {
+							cur.Balance = t.Balance
+						}
+						bySCID[key] = cur
+					} else {
+						bySCID[key] = t
+					}
+				}
+				merged := make([]wallet.TokenInfo, 0, len(bySCID))
+				for _, v := range bySCID {
+					merged = append(merged, v)
+				}
+				m.tokens.SetTokens(merged)
+			}
 		}
 	case tokenAddResultMsg:
 		if msg.err != "" {
@@ -1183,6 +1292,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.daemonAddress != "" {
 				m.cachedDaemonAddress = msg.daemonAddress
 				m.cachedDaemonHealthy = true
+				m.cachedDaemonNetwork = string(msg.network)
+			}
+			addr := msg.daemonAddress
+			if addr == "" {
+				addr = m.cachedDaemonAddress
+			}
+			netLabel := string(msg.network)
+			if netLabel == "" && m.wallet != nil {
+				netLabel = m.wallet.GetNetworkType()
+			}
+			if addr != "" {
+				m.ensureHyperGnomon(addr, netLabel)
+			}
+			m.updateHyperDashboard()
+			if m.page == PageTokens {
+				m.tokens.SetScanning(true, "Refreshing token metadata...")
+				cmds = append(cmds, m.loadTokensCmd(), m.discoverTokensCmd())
 			}
 			// Keep global debug state stable across page transitions.
 			// Only sync dashboard indicator from current global state.
@@ -1392,6 +1518,7 @@ func (m *Model) shutdownSession(quitting bool) {
 			// Clear app-level cached state (keep global daemon endpoint for switch detection)
 			m.cachedDaemonHealthy = false
 			m.cachedDaemonAddress = ""
+			m.cachedDaemonNetwork = ""
 			m.Opts.DaemonAddress = m.cliDaemonAddress
 			m.regHintShown = false
 			m.clearPendingRegistration()
@@ -1399,7 +1526,112 @@ func (m *Model) shutdownSession(quitting bool) {
 	}
 	if quitting {
 		m.quitting = true
+		m.closeHyperGnomon()
 	}
+}
+
+func (m *Model) ensureHyperGnomon(endpoint, network string) {
+	if m.Opts.Offline {
+		return
+	}
+	endpoint = strings.TrimSpace(endpoint)
+	if endpoint == "" || endpoint == "Not connected" {
+		return
+	}
+	if strings.TrimSpace(network) == "" {
+		network = "Mainnet"
+	}
+	normNet := strings.ToLower(strings.TrimSpace(network))
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	defer m.hyperMu.Unlock()
+	if m.hyperGnomon != nil && m.hyperGnomon.IsRunning() {
+		if strings.EqualFold(m.hyperGnomon.Network(), normNet) && m.hyperGnomon.Endpoint() == endpoint {
+			m.stampHyperHUD(m.hyperGnomon)
+			return
+		}
+		m.hyperGnomon.Close()
+		m.hyperGnomon = nil
+	}
+	h, err := wallet.NewHyperGnomon(endpoint, normNet, "", 8)
+	if err != nil {
+		derolog.Warn("hypergnomon", "start.failed", "failed to start HyperGnomon", "error", err.Error(), "endpoint", endpoint, "network", normNet)
+		return
+	}
+	m.hyperGnomon = h
+	m.stampHyperHUD(h)
+}
+
+func (m *Model) stampHyperHUD(h *wallet.HyperGnomon) {
+	if h == nil {
+		return
+	}
+	scids, last, chain, status := h.Progress()
+	m.dashboard.IndexerScanned = scids
+	m.dashboard.IndexerTotal = scids
+	m.dashboard.IndexerLastHeight = last
+	m.dashboard.IndexerChainHeight = chain
+	// Complete when indexer reports indexed and heights claim tip.
+	if chain > 0 && last >= chain {
+		m.dashboard.IndexerState = "complete"
+	} else if status == "indexed" && scids > 0 && chain > 0 && last >= chain {
+		m.dashboard.IndexerState = "complete"
+	} else if scids > 0 || last > 0 || chain > 0 || status != "" {
+		if m.dashboard.IndexerState != "complete" {
+			m.dashboard.IndexerState = "scanning"
+		}
+	} else if m.dashboard.IndexerState == "" {
+		m.dashboard.IndexerState = "scanning"
+	}
+}
+
+func (m *Model) closeHyperGnomon() {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	defer m.hyperMu.Unlock()
+	if m.hyperGnomon != nil {
+		m.hyperGnomon.Close()
+		m.hyperGnomon = nil
+	}
+}
+
+func (m *Model) hyperSCIDs() []string {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h == nil {
+		return nil
+	}
+	return h.SCIDs()
+}
+
+func (m *Model) hasHyperRunning() bool {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	defer m.hyperMu.Unlock()
+	return m.hyperGnomon != nil && m.hyperGnomon.IsRunning()
+}
+
+func (m *Model) updateHyperDashboard() {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h == nil || !h.IsRunning() {
+		return
+	}
+	m.stampHyperHUD(h)
 }
 
 // paletteEnabled reports whether the "/" command palette is available on the

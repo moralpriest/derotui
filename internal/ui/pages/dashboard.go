@@ -39,23 +39,25 @@ type DashboardModel struct {
 	LockedBalance uint64
 
 	// Wallet info (for header section)
-	WalletName      string
-	Network         string
-	IsOnline        bool
-	IsSynced        bool
-	IsBootstrapping bool
-	IsRegistered    bool
-	IsRegistering   bool
-	RegPending      bool
-	RegTxID         string
-	RegStatus       string
-	IsConnecting    bool // true while async daemon connection is in progress
-	DaemonAddress   string
-	Height          uint64
-	DaemonHeight    uint64
-	IndexerScanned  int
-	IndexerTotal    int
-	IndexerState    string
+	WalletName         string
+	Network            string
+	IsOnline           bool
+	IsSynced           bool
+	IsBootstrapping    bool
+	IsRegistered       bool
+	IsRegistering      bool
+	RegPending         bool
+	RegTxID            string
+	RegStatus          string
+	IsConnecting       bool // true while async daemon connection is in progress
+	DaemonAddress      string
+	Height             uint64
+	DaemonHeight       uint64
+	IndexerScanned     int
+	IndexerTotal       int
+	IndexerState       string
+	IndexerLastHeight  int64
+	IndexerChainHeight int64
 
 	// Display
 	Address   string
@@ -352,7 +354,7 @@ func (d DashboardModel) View() string {
 	}
 	walletLabel = truncateMiddle(walletLabel, 24)
 
-	networkLine := styles.MutedStyle.Render("Network: ") +
+	networkLine := hudLabel("Network") +
 		networkStyle.Render(networkLabel) +
 		" " +
 		dotStyle.Render("●") +
@@ -379,46 +381,47 @@ func (d DashboardModel) View() string {
 	} else {
 		heightValue = styles.TextStyle.Render(styles.UintToStr(d.Height))
 	}
-	heightLine := styles.MutedStyle.Render("Height:  ") + heightValue
-	daemonLine := styles.MutedStyle.Render("Daemon:  ") + styles.TextStyle.Render(displayDaemon)
-	hyperLine := ""
-	if d.IndexerTotal > 0 || d.IndexerScanned > 0 {
-		indexerStyle := styles.ErrorStyle
-		if d.IndexerState == "scanning" {
-			indexerStyle = styles.WarningStyle
-		} else if d.IndexerState == "complete" {
-			indexerStyle = styles.SuccessStyle
-		}
-		hyperLine = styles.MutedStyle.Render("Index: ") + indexerStyle.Render(fmt.Sprintf("%d/%d SCIDs", d.IndexerScanned, d.IndexerTotal))
+	heightLine := hudLabel("Height") + heightValue
+	daemonLine := hudLabel("Daemon") + styles.TextStyle.Render(displayDaemon)
+	var indexValue string
+	// Like Height: show N/M with orange/green while indexer is behind chain tip.
+	if d.IndexerChainHeight > 0 && d.IndexerLastHeight < d.IndexerChainHeight && d.IndexerTotal > 0 {
+		indexValue = styles.WarningStyle.Render(fmt.Sprintf("%d", d.IndexerScanned)) +
+			styles.MutedStyle.Render(" / ") +
+			styles.SuccessStyle.Render(fmt.Sprintf("%d", d.IndexerTotal)) +
+			styles.MutedStyle.Render(" SCIDs")
+	} else if d.IndexerState == "complete" || (d.IndexerChainHeight > 0 && d.IndexerLastHeight >= d.IndexerChainHeight && d.IndexerTotal > 0) {
+		indexValue = styles.SuccessStyle.Render(fmt.Sprintf("%d SCIDs", d.IndexerTotal))
+	} else if d.IndexerState == "scanning" || d.IndexerTotal > 0 {
+		indexValue = styles.WarningStyle.Render(fmt.Sprintf("%d SCIDs", d.IndexerTotal))
+	} else {
+		indexValue = styles.TextStyle.Render("0 SCIDs")
 	}
-
-	walletLine := styles.MutedStyle.Render("Wallet:  ") + styles.TextStyle.Render(walletLabel)
-	hudLines := []string{networkLine, heightLine, daemonLine}
-	if hyperLine != "" {
-		hudLines = append(hudLines, hyperLine)
+	hyperLine := hudLabel("Index") + indexValue
+	walletLine := hudLabel("Wallet") + styles.TextStyle.Render(walletLabel)
+	const hudInner = 36
+	hudLines := []string{
+		padVisible(networkLine, hudInner),
+		padVisible(heightLine, hudInner),
+		padVisible(daemonLine, hudInner),
+		padVisible(hyperLine, hudInner),
+		padVisible(walletLine, hudInner),
 	}
-	hudLines = append(hudLines, walletLine)
-	hudContent := lipgloss.JoinVertical(lipgloss.Left, hudLines...)
+	hudContent := strings.Join(hudLines, "\n")
 
 	statusCard := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(styles.ColorBorder).
 		Padding(0, 1).
-		Width(38).
 		Render(hudContent)
 
-	walletInfo := lipgloss.NewStyle().Render(statusCard)
+	walletInfo := statusCard
 	if d.RegPending && d.RegTxID != "" {
 		regLine := styles.MutedStyle.Render("Reg TX ") + styles.WarningStyle.Render(truncateHash(d.RegTxID, 16))
-		walletInfo = lipgloss.JoinVertical(lipgloss.Left, walletInfo, regLine)
+		walletInfo = walletInfo + "\n" + regLine
 	}
 
-	// Join logo and wallet info horizontally
-	header := lipgloss.JoinHorizontal(lipgloss.Top,
-		logo,
-		"   ",
-		walletInfo,
-	)
+	header := joinColumns(logo, walletInfo, 3)
 
 	// Center the header
 	headerCentered := lipgloss.NewStyle().
@@ -862,6 +865,77 @@ func (d *DashboardModel) SetXSWDRunning(running bool) {
 // SetDebugEnabled sets the debug enabled status (for indicator only)
 func (d *DashboardModel) SetDebugEnabled(enabled bool) {
 	d.debugEnabled = enabled
+}
+
+// hudLabel renders a HUD key so values share column 9 with Height/Daemon/Wallet.
+// Trailing pad spaces are unstyled: lipgloss strips spaces inside Render().
+func hudLabel(name string) string {
+	key := name + ":"
+	pad := 9 - len(key)
+	if pad < 1 {
+		pad = 1
+	}
+	return styles.MutedStyle.Render(key) + strings.Repeat(" ", pad)
+}
+
+func stripCSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\x1b' {
+			inEsc = true
+			continue
+		}
+		if inEsc {
+			if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+				inEsc = false
+			}
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+func visibleLen(s string) int {
+	return len([]rune(stripCSI(s)))
+}
+
+func padVisible(s string, width int) string {
+	n := visibleLen(s)
+	if n >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-n)
+}
+
+func joinColumns(left, right string, gap int) string {
+	leftLines := strings.Split(strings.TrimRight(left, "\n"), "\n")
+	rightLines := strings.Split(strings.TrimRight(right, "\n"), "\n")
+	leftW := 0
+	for _, l := range leftLines {
+		if n := visibleLen(l); n > leftW {
+			leftW = n
+		}
+	}
+	n := len(leftLines)
+	if len(rightLines) > n {
+		n = len(rightLines)
+	}
+	sep := strings.Repeat(" ", gap)
+	out := make([]string, n)
+	for i := 0; i < n; i++ {
+		l, r := "", ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		if i < len(rightLines) {
+			r = rightLines[i]
+		}
+		out[i] = padVisible(l, leftW) + sep + r
+	}
+	return strings.Join(out, "\n")
 }
 
 func truncateDaemonAddress(addr string, maxLen int) string {

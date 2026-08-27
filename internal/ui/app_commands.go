@@ -792,12 +792,21 @@ func (m *Model) loadTokensCmd() tea.Cmd {
 func (m *Model) discoverTokensCmd() tea.Cmd {
 	w := m.wallet
 	walletFile := m.walletFile
+	model := m
 	return func() tea.Msg {
 		if w == nil {
 			return tokenScanMsg{err: "wallet not open", done: true}
 		}
-		if err := w.StartHyperGnomon("", 8); err != nil {
-			return tokenScanMsg{err: "HyperGnomon: " + err.Error(), done: true}
+		// Prefer the app-owned HyperGnomon which starts at launch without a
+		// wallet. Fall back to the wallet-owned indexer only when the app
+		// instance is not yet running (avoids double-opening the same bbolt
+		// file for the same network).
+		appSCIDs := model.hyperSCIDs()
+		walletSCIDs := w.HyperGnomonSCIDs()
+		if len(appSCIDs) == 0 && len(walletSCIDs) == 0 && !model.hasHyperRunning() {
+			_ = w.StartHyperGnomon("", 8)
+			walletSCIDs = w.HyperGnomonSCIDs()
+			appSCIDs = model.hyperSCIDs()
 		}
 		known := config.GetDiscoveredSCIDs(walletFile)
 		if tracked := config.GetWalletTokens(walletFile); len(tracked) > 0 {
@@ -817,7 +826,14 @@ func (m *Model) discoverTokensCmd() tea.Cmd {
 		// HyperGnomon may still be warming its database when this command
 		// runs. Read its candidates after startup and merge them into the
 		// reusable registry; never return early from a progress update.
-		for _, scid := range w.HyperGnomonSCIDs() {
+		for _, scid := range appSCIDs {
+			scid = strings.ToLower(strings.TrimSpace(scid))
+			if scid != "" && !seen[scid] {
+				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "hypergnomon"})
+				seen[scid] = true
+			}
+		}
+		for _, scid := range walletSCIDs {
 			scid = strings.ToLower(strings.TrimSpace(scid))
 			if scid != "" && !seen[scid] {
 				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "hypergnomon"})
@@ -834,6 +850,18 @@ func (m *Model) discoverTokensCmd() tea.Cmd {
 				// Progress is represented by the dashboard's next periodic update;
 				// keep this command focused on the bounded verification pass.
 				continue
+			}
+		}
+		for i := range tokens {
+			meta, _ := w.GetTokenMetadata(context.Background(), tokens[i].SCID)
+			if meta.Name != "" {
+				tokens[i].Name = meta.Name
+			}
+			if meta.Ticker != "" {
+				tokens[i].Ticker = meta.Ticker
+			}
+			if meta.Decimals != 0 {
+				tokens[i].Decimals = meta.Decimals
 			}
 		}
 		if len(tokens) > 0 {
