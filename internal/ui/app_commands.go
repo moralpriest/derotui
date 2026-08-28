@@ -814,6 +814,7 @@ func (m *Model) loadTokensCmd() tea.Cmd {
 func (m *Model) tokenScanStartCmd(exhaustive bool) tea.Cmd {
 	m.tokenScanID++
 	id := m.tokenScanID
+	m.tokenScanStartedAt = time.Now()
 	w := m.wallet
 	walletFile := m.walletFile
 	model := m
@@ -862,10 +863,7 @@ func (m *Model) tokenScanStartCmd(exhaustive bool) tea.Cmd {
 			add(scid)
 		}
 		if exhaustive || len(addrSCIDs) == 0 {
-			for _, scid := range appSCIDs {
-				add(scid)
-			}
-			for _, scid := range walletSCIDs {
+			for _, scid := range model.hyperTokenLikeSCIDs() {
 				add(scid)
 			}
 		}
@@ -874,6 +872,9 @@ func (m *Model) tokenScanStartCmd(exhaustive bool) tea.Cmd {
 		// populated yet (especially immediately after opening a wallet), and
 		// filtering them here can turn a real holding into an empty scan.
 		// Existing balances are cheap to verify and are merged idempotently.
+		derolog.Info("token", "scan.start", "token scan started",
+			"candidates", fmt.Sprintf("%d", len(candidates)),
+			"exhaustive", fmt.Sprintf("%v", exhaustive))
 		return tokenScanProgressMsg{id: id, candidates: candidates}
 	}
 }

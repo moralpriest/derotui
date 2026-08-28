@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	hgindexer "github.com/hypergnomon/hypergnomon/pkg/gnomes/indexer"
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
@@ -28,6 +29,7 @@ type HyperGnomon struct {
 	mu       sync.Mutex
 	endpoint string
 	network  string
+	started  time.Time
 }
 
 // NewHyperGnomon creates and starts a standalone bbolt-backed indexer that
@@ -58,7 +60,7 @@ func NewHyperGnomon(endpoint, network string, dbDir string, parallelBlocks int) 
 	if err != nil {
 		return nil, fmt.Errorf("open HyperGnomon database: %w", err)
 	}
-	cfg := &hgstructures.FastSyncConfig{Enabled: true, ForceFastSync: true, NoCode: true}
+	cfg := &hgstructures.FastSyncConfig{Enabled: true, ForceFastSync: true, NoCode: false}
 	idx := hgindexer.NewIndexer(nil, store, "boltdb", nil, 0, endpoint, "daemon", false, false, cfg, nil, false)
 	if idx == nil || idx.DBType == "" {
 		_ = store.Close()
@@ -69,7 +71,7 @@ func NewHyperGnomon(endpoint, network string, dbDir string, parallelBlocks int) 
 		parallelBlocks = 16
 	}
 	idx.StartDaemonMode(parallelBlocks)
-	h := &HyperGnomon{index: idx, store: store, endpoint: endpoint, network: network}
+	h := &HyperGnomon{index: idx, store: store, endpoint: endpoint, network: network, started: time.Now()}
 	globalAppHyperMu.Lock()
 	globalAppHyper = h
 	globalAppHyperMu.Unlock()
@@ -122,6 +124,92 @@ func (h *HyperGnomon) SCIDsForAddress(addr string) []string {
 	return out
 }
 
+var tokenLikeClasses = []string{"DERO-ASSET", "G45-AT", "G45-FAT", "T345"}
+
+func IsTokenLikeClass(class string) bool {
+	switch class {
+	case "DERO-ASSET", "G45-AT", "G45-FAT", "T345":
+		return true
+	default:
+		return false
+	}
+}
+
+func (h *HyperGnomon) ClassOf(scid string) string {
+	if h == nil || h.store == nil {
+		return ""
+	}
+	h.mu.Lock()
+	store := h.store
+	h.mu.Unlock()
+	if store == nil {
+		return ""
+	}
+	inner := store.Inner()
+	if inner == nil {
+		return ""
+	}
+	meta, err := inner.GetSCIDClass(strings.ToLower(strings.TrimSpace(scid)))
+	if err != nil || meta == nil {
+		return ""
+	}
+	return meta.Class
+}
+
+func (h *HyperGnomon) SCIDsByClass(class string) []string {
+	if h == nil || h.store == nil || class == "" {
+		return nil
+	}
+	h.mu.Lock()
+	store := h.store
+	h.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	inner := store.Inner()
+	if inner == nil {
+		return nil
+	}
+	insts, err := inner.GetClassInstalls(class, 0)
+	if err != nil || len(insts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(insts))
+	for _, inst := range insts {
+		if inst.SCID != "" {
+			out = append(out, inst.SCID)
+		}
+	}
+	return out
+}
+
+func (h *HyperGnomon) ClassCounts() map[string]int {
+	counts := make(map[string]int)
+	for _, scid := range h.SCIDs() {
+		c := h.ClassOf(scid)
+		if c == "" {
+			c = "UNKNOWN"
+		}
+		counts[c]++
+	}
+	return counts
+}
+
+func (h *HyperGnomon) TokenLikeSCIDs() []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, class := range tokenLikeClasses {
+		for _, scid := range h.SCIDsByClass(class) {
+			if seen[scid] {
+				continue
+			}
+			seen[scid] = true
+			out = append(out, scid)
+		}
+	}
+	return out
+}
+
 // Count returns the number of indexed SCIDs.
 func (h *HyperGnomon) Count() int {
 	if h == nil || h.store == nil {
@@ -160,6 +248,13 @@ func (h *HyperGnomon) IsRunning() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.store != nil && h.index != nil
+}
+
+func (h *HyperGnomon) StartedAt() time.Time {
+	if h == nil {
+		return time.Time{}
+	}
+	return h.started
 }
 
 // Progress returns SCID count and height progress. chainHeight is 0 while

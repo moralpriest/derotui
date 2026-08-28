@@ -233,6 +233,8 @@ type Model struct {
 	tokenScanPending    []string
 	tokenRecheckActive  bool
 	tokenScanFound      int
+	tokenScanStartedAt  time.Time
+	hyperCompleteLogged bool
 	daemonManager       *daemonservice.Manager
 	embeddedDaemon      *daemonservice.EmbeddedDaemon
 	rpcMiner            minerservice.RPCBackend
@@ -1186,6 +1188,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.tokens.SetFlash(fmt.Sprintf("Scan complete: %d %s with balance (%d candidates checked)",
 				m.tokenScanFound, plural(m.tokenScanFound, "token"), total), true)
+			ms := int64(0)
+			if !m.tokenScanStartedAt.IsZero() {
+				ms = time.Since(m.tokenScanStartedAt).Milliseconds()
+			}
+			derolog.Info("token", "scan.complete", "token scan finished",
+				"found", fmt.Sprintf("%d", m.tokenScanFound),
+				"candidates", fmt.Sprintf("%d", total),
+				"duration_ms", fmt.Sprintf("%d", ms))
 			m.updateHyperDashboard()
 			break
 		}
@@ -1553,6 +1563,8 @@ func (m *Model) ensureHyperGnomon(endpoint, network string) {
 		return
 	}
 	m.hyperGnomon = h
+	m.hyperCompleteLogged = false
+	derolog.Info("hypergnomon", "scan.start", "HyperGnomon started", "endpoint", endpoint, "network", normNet)
 	m.stampHyperHUD(h)
 }
 
@@ -1564,6 +1576,18 @@ func (m *Model) stampHyperHUD(h *wallet.HyperGnomon) {
 	state := "scanning"
 	if chain > 0 && last+2 >= chain {
 		state = "complete"
+	}
+	if state == "complete" && !m.hyperCompleteLogged {
+		m.hyperCompleteLogged = true
+		ms := int64(0)
+		if !h.StartedAt().IsZero() {
+			ms = time.Since(h.StartedAt()).Milliseconds()
+		}
+		derolog.Info("hypergnomon", "scan.complete", "HyperGnomon caught up",
+			"scids", fmt.Sprintf("%d", scids),
+			"last", fmt.Sprintf("%d", last),
+			"chain", fmt.Sprintf("%d", chain),
+			"duration_ms", fmt.Sprintf("%d", ms))
 	}
 	m.dashboard.SetIndexerProgress(scids, state)
 }
@@ -1679,6 +1703,19 @@ func (m *Model) hyperSCIDs() []string {
 		return nil
 	}
 	return h.SCIDs()
+}
+
+func (m *Model) hyperTokenLikeSCIDs() []string {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h == nil {
+		return nil
+	}
+	return h.TokenLikeSCIDs()
 }
 
 func (m *Model) hasHyperRunning() bool {
