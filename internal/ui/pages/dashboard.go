@@ -27,6 +27,7 @@ var (
 	dashboardDonateKeys         = key.NewBinding(key.WithKeys("d"))
 	dashboardNamesKeys          = key.NewBinding(key.WithKeys("n"))
 	dashboardTokensKeys         = key.NewBinding(key.WithKeys("t"))
+	dashboardDiscoverKeys       = key.NewBinding(key.WithKeys("e"))
 	dashboardPrevPageKeys       = key.NewBinding(key.WithKeys("left", "["))
 	dashboardNextPageKeys       = key.NewBinding(key.WithKeys("right", "]"))
 	dashboardDownKeys           = key.NewBinding(key.WithKeys("down", "j"))
@@ -74,7 +75,8 @@ type DashboardModel struct {
 	wantIntegratedAddr bool // NEW: generate integrated address
 	wantDonate         bool // NEW: donate to developer
 	wantNames          bool // NEW: registered names management
-	wantTokens         bool // NEW: token management
+	wantTokens         bool
+	wantDiscover       bool
 
 	// XSWD status
 	xswdRunning bool
@@ -121,6 +123,7 @@ var basePages = []pageInfo{
 			{"P", "↻", "Change Password"},
 			{"D", "♥", "Donate"},
 			{"N", "", "Names"},
+			{"E", "⌕", "Discover"},
 			{"X", "⇄", "XSWD"},
 		},
 	},
@@ -213,6 +216,8 @@ func (d DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 			d.wantNames = true
 		case key.Matches(msg, dashboardTokensKeys):
 			d.wantTokens = true
+		case key.Matches(msg, dashboardDiscoverKeys):
+			d.wantDiscover = true
 
 		// Page navigation with paginator
 		case key.Matches(msg, dashboardPrevPageKeys):
@@ -273,6 +278,8 @@ func (d DashboardModel) Update(msg tea.Msg) (DashboardModel, tea.Cmd) {
 					d.wantDonate = true
 				case "T":
 					d.wantTokens = true
+				case "E":
+					d.wantDiscover = true
 				case "X":
 					d.wantXSWD = true
 				}
@@ -853,6 +860,10 @@ func (d DashboardModel) WantTokens() bool {
 	return d.wantTokens
 }
 
+func (d DashboardModel) WantDiscover() bool {
+	return d.wantDiscover
+}
+
 // SetXSWDRunning sets the XSWD running status
 func (d *DashboardModel) SetXSWDRunning(running bool) {
 	d.xswdRunning = running
@@ -1018,7 +1029,7 @@ func (d *DashboardModel) ResetActions() {
 	d.wantDonate = false
 	d.wantNames = false
 	d.wantTokens = false
-	// Don't reset tab or selection - let user stay where they were
+	d.wantDiscover = false
 }
 
 // HandleMouse handles mouse events on the dashboard
@@ -1080,6 +1091,8 @@ func (d DashboardModel) HandleMouse(msg tea.MouseClickMsg, windowWidth, windowHe
 					d.wantNames = true
 				case "T":
 					d.wantTokens = true
+				case "E":
+					d.wantDiscover = true
 				case "X":
 					d.wantXSWD = true
 				}

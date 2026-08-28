@@ -63,7 +63,7 @@ func TestPaletteFilterCommands(t *testing.T) {
 	p := NewPalette()
 	p.Open(false)
 
-	p.Filtered = filterPaletteCommands(p.commands, "/m")
+	p.Filtered = filterPaletteCommands(p.commands, "/mi")
 	if len(p.Filtered) != 1 || p.Filtered[0].Name != "/miner" {
 		t.Fatalf("expected /miner only, got %+v", p.Filtered)
 	}

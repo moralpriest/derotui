@@ -140,6 +140,8 @@ func (m Model) generateWindowTitle() string {
 		return base + " - Register Name"
 	case PageNameTransfer:
 		return base + " - Transfer Name"
+	case PageDiscover:
+		return base + " - Discover"
 	default:
 		return base
 	}

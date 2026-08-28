@@ -56,6 +56,8 @@ func (m *Model) handleMouseEvent(msg tea.MouseMsg) bool {
 	case PageTokens:
 		m.tokens = m.tokens.HandleMouse(clickMsg, m.width, m.height)
 		return false
+	case PageDiscover:
+		return false
 	case PageTokenSend:
 		m.tokenSend = m.tokenSend.HandleMouse(clickMsg, m.width, m.height)
 		return false

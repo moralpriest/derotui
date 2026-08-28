@@ -69,3 +69,33 @@ func TestHyperGnomonSCIDsForAddress(t *testing.T) {
 		t.Fatalf("closed store: got %v, want nil", got)
 	}
 }
+
+func TestNameFromCatalogVals(t *testing.T) {
+	if got := nameFromCatalogVals(map[string]string{"name": "Art NFA"}); got != "Art NFA" {
+		t.Fatalf("name key: %q", got)
+	}
+	if got := nameFromCatalogVals(map[string]string{"metadata": `{"name":"Cool NFT","description":"x"}`}); got != "Cool NFT" {
+		t.Fatalf("g45 metadata: %q", got)
+	}
+	if got := nameFromCatalogVals(map[string]string{"var_header_name": "vault.tela", "name": "ignored"}); got != "vault.tela" {
+		t.Fatalf("header wins: %q", got)
+	}
+	if got := LookupSCName("", ""); got != "" {
+		t.Fatalf("empty lookup: %q", got)
+	}
+}
+
+func TestFilterCatalogBySCIDs(t *testing.T) {
+	entries := []CatalogEntry{
+		{SCID: "AA", Class: "G45-NFT", Name: "one"},
+		{SCID: "bb", Class: "G45-NFT", Name: "two"},
+		{SCID: "cc", Class: "G45-NFT", Name: "three"},
+	}
+	got := FilterCatalogBySCIDs(entries, []string{"aa", "CC"})
+	if len(got) != 2 || got[0].Name != "one" || got[1].Name != "three" {
+		t.Fatalf("intersect: %+v", got)
+	}
+	if got := FilterCatalogBySCIDs(entries, nil); got != nil {
+		t.Fatalf("empty scids: %v", got)
+	}
+}

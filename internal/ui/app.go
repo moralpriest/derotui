@@ -98,6 +98,7 @@ const (
 	PageTokens         // Token management
 	PageTokenSend      // Send token
 	PageTokenHistory   // Token history
+	PageDiscover       // TELA / NFT / NFA catalog
 )
 
 // CLIOptions holds command line options
@@ -168,6 +169,7 @@ type Model struct {
 	tokens         pages.TokensModel
 	tokenSend      pages.TokenSendModel
 	tokenHistory   pages.TokenHistoryModel
+	discover       pages.DiscoverModel
 
 	// State flags
 	isCreating           bool
@@ -210,23 +212,27 @@ type Model struct {
 	lastWalletDaemon      string
 
 	// Global debug console state (visible on all pages)
-	debugEnabled     bool
-	debugConsoleOpen bool
-	debugAutoFollow  bool
-	debugScrollStart int
-	debugLastClickY  int
-	debugLastClickAt time.Time
-	debugLogEntries  []derolog.LogEntry
-	regHintShown     bool
-	pendingRegTxID   string
-	pendingRegStatus string
-	pendingRegHeight uint64
-	pendingOutgoing  map[string]pendingOutgoingTx
-	startupFlowSet   bool
-	lastDaemonRetry  time.Time
-	daemonRetryAfter time.Duration
-	lastTxRefreshAt  time.Time
-	tokenScanActive  bool
+	debugEnabled      bool
+	debugConsoleOpen  bool
+	debugAutoFollow   bool
+	debugScrollStart  int
+	debugLastClickY   int
+	debugLastClickAt  time.Time
+	debugLogEntries   []derolog.LogEntry
+	regHintShown      bool
+	pendingRegTxID    string
+	pendingRegStatus  string
+	pendingRegHeight  uint64
+	pendingOutgoing   map[string]pendingOutgoingTx
+	startupFlowSet    bool
+	lastDaemonRetry   time.Time
+	daemonRetryAfter  time.Duration
+	lastTxRefreshAt   time.Time
+	tokenScanActive   bool
+	discoverHydrating bool
+	discoverTried     map[string]bool
+	discoverProbing   bool
+	discoverOwnedDone bool
 	// Incremental token scan state (see tokenScanProgressMsg).
 	tokenScanID         int
 	tokenScanCandidates []string
@@ -287,6 +293,7 @@ func NewModel() Model {
 		tokens:           pages.NewTokens(),
 		tokenSend:        pages.NewTokenSend(),
 		tokenHistory:     pages.NewTokenHistory(),
+		discover:         pages.NewDiscover(),
 		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
 		hyperMu:          &sync.Mutex{},
@@ -463,6 +470,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tokens, cmd = m.tokens.Update(msg)
 			return m, cmd
 		}
+		if m.page == PageDiscover {
+			var cmd tea.Cmd
+			m.discover, cmd = m.discover.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -529,6 +541,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.setWindowTitleCmd()
 			case PageTokens:
 				m.page = PageMain
+				return m, m.setWindowTitleCmd()
+			case PageDiscover:
+				m.page = PageMain
+				if m.wallet == nil {
+					m.page = PageWelcome
+				}
 				return m, m.setWindowTitleCmd()
 			case PageTokenSend:
 				m.tokenSend.Reset()
@@ -653,6 +671,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// HyperGnomon: keep HUD counts fresh and ensure indexer starts at launch
 		// without requiring a wallet or an open token menu.
 		m.updateHyperDashboard()
+		if m.page == PageDiscover {
+			m.loadDiscoverCatalog()
+			cmds = append(cmds, m.maybeProbeDiscover(), m.maybeHydrateDiscover())
+		}
 		if m.hyperGnomon == nil || !m.hyperGnomon.IsRunning() {
 			if m.cachedDaemonHealthy && m.cachedDaemonAddress != "" {
 				m.ensureHyperGnomon(m.cachedDaemonAddress, m.cachedDaemonNetwork)
@@ -1225,6 +1247,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tokenMetadataMsg:
 		m.mergeDiscoveredTokens(msg.tokens)
 
+	case discoverNamesMsg:
+		m.discoverHydrating = false
+		m.discover.ApplyNames(msg.names)
+		if cmd := m.maybeHydrateDiscover(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
+	case discoverOwnedMsg:
+		m.discoverProbing = false
+		m.discoverOwnedDone = true
+		m.discover.SetProbing(false)
+		m.discover.SetOwned(msg.nft, msg.nfa)
+		if cmd := m.maybeHydrateDiscover(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case tokensLoadedMsg:
 		m.tokens.SetLoading(false)
 		if msg.err != "" {
@@ -1705,6 +1743,134 @@ func (m *Model) hyperSCIDs() []string {
 	return h.SCIDs()
 }
 
+type discoverNamesMsg struct {
+	names map[string]string
+}
+
+func (m *Model) maybeHydrateDiscover() tea.Cmd {
+	if m.page != PageDiscover || m.discoverHydrating {
+		return nil
+	}
+	need := m.discover.UnnamedVisible()
+	if m.discoverTried == nil {
+		m.discoverTried = map[string]bool{}
+	}
+	var scids []string
+	for _, s := range need {
+		if !m.discoverTried[s] {
+			scids = append(scids, s)
+		}
+	}
+	if len(scids) == 0 {
+		return nil
+	}
+	endpoint := m.cachedDaemonAddress
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h != nil && h.Endpoint() != "" {
+		endpoint = h.Endpoint()
+	}
+	if endpoint == "" {
+		return nil
+	}
+	m.discoverHydrating = true
+	for _, s := range scids {
+		m.discoverTried[s] = true
+	}
+	return func() tea.Msg {
+		names := map[string]string{}
+		for _, s := range scids {
+			if n := wallet.LookupSCName(endpoint, s); n != "" {
+				names[s] = n
+			}
+		}
+		return discoverNamesMsg{names: names}
+	}
+}
+
+type discoverOwnedMsg struct {
+	nft []wallet.CatalogEntry
+	nfa []wallet.CatalogEntry
+}
+
+func (m *Model) maybeProbeDiscover() tea.Cmd {
+	if m.page != PageDiscover || m.discoverProbing || m.discoverOwnedDone || m.wallet == nil {
+		return nil
+	}
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h == nil {
+		return nil
+	}
+	addr := m.wallet.GetAddress()
+	touched := m.hyperAddressSCIDs(addr)
+	nftCands := wallet.FilterCatalogBySCIDs(h.Catalog("G45-NFT"), touched)
+	nfaCands := wallet.FilterCatalogBySCIDs(h.Catalog("NFA"), touched)
+	if len(nftCands)+len(nfaCands) == 0 {
+		if m.discover.Classifying() {
+			return nil
+		}
+		m.discoverOwnedDone = true
+		m.discover.SetProbing(false)
+		m.discover.SetOwned(nil, nil)
+		return nil
+	}
+	endpoint := h.Endpoint()
+	if endpoint == "" {
+		endpoint = m.cachedDaemonAddress
+	}
+	w := m.wallet
+	m.discoverProbing = true
+	m.discover.SetProbing(true)
+	return func() tea.Msg {
+		keep := func(cands []wallet.CatalogEntry) []wallet.CatalogEntry {
+			var out []wallet.CatalogEntry
+			for _, e := range cands {
+				if discoverAssetOwned(w, endpoint, e.SCID, addr) {
+					out = append(out, e)
+				}
+			}
+			return out
+		}
+		return discoverOwnedMsg{nft: keep(nftCands), nfa: keep(nfaCands)}
+	}
+}
+
+func discoverAssetOwned(w *wallet.Wallet, endpoint, scid, addr string) bool {
+	if w != nil {
+		if bal, err := w.ProbeTokenBalance(scid); err == nil && bal > 0 {
+			return true
+		}
+	}
+	owner := wallet.LookupSCOwner(endpoint, scid)
+	return owner != "" && strings.EqualFold(owner, addr)
+}
+
+func (m *Model) loadDiscoverCatalog() {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	var tela []wallet.CatalogEntry
+	classifying := false
+	if h != nil {
+		tela = h.Catalog("TELA-INDEX-1")
+		classCount := len(h.SCIDsByClass("TELA-INDEX-1")) + len(h.SCIDsByClass("G45-NFT")) + len(h.SCIDsByClass("NFA"))
+		classifying = h.Count() > 0 && classCount == 0
+	}
+	m.discover.SetTela(tela, classifying, m.wallet == nil)
+}
+
 func (m *Model) hyperTokenLikeSCIDs() []string {
 	if m.hyperMu == nil {
 		m.hyperMu = &sync.Mutex{}
@@ -1745,7 +1911,7 @@ func (m *Model) updateHyperDashboard() {
 // menus so "/" never gets stolen from typed input.
 func paletteEnabled(page Page) bool {
 	switch page {
-	case PageMain, PageMiner, PageNames, PageTokens, PageTokenHistory, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
+	case PageMain, PageMiner, PageNames, PageTokens, PageTokenHistory, PageDiscover, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
 		return true
 	default:
 		return false
@@ -2186,6 +2352,19 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 			cmds = append(cmds, m.setWindowTitleCmd())
 		}
 
+	case PageDiscover:
+		m.discover, cmd = m.discover.Update(msg)
+		cmds = append(cmds, cmd)
+		cmds = append(cmds, m.maybeHydrateDiscover())
+		if m.discover.Cancelled() {
+			m.discover.ClearCancelled()
+			m.page = PageMain
+			if m.wallet == nil {
+				m.page = PageWelcome
+			}
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+
 	case PageTokens:
 		m.tokens, cmd = m.tokens.Update(msg)
 		cmds = append(cmds, cmd)
@@ -2376,6 +2555,9 @@ func (m Model) View() tea.View {
 
 	case PageXSWDPerm:
 		content = m.xswdPerm.View()
+
+	case PageDiscover:
+		content = m.discover.View()
 
 	case PageTokens:
 		content = m.tokens.View()

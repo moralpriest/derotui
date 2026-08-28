@@ -141,6 +141,9 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		}
 		return m.openTokensPage()
 
+	case pages.ActionDiscover:
+		return m.openDiscoverPage()
+
 	case pages.ActionCloseWallet:
 		m.shutdownSession(false)
 		m.page = PageWelcome
@@ -643,7 +646,20 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 		}
 		return m.openTokensPage()
 	}
+	if m.dashboard.WantDiscover() {
+		m.dashboard.ResetActions()
+		return m.openDiscoverPage()
+	}
 	return cmd
+}
+
+func (m *Model) openDiscoverPage() tea.Cmd {
+	m.discoverOwnedDone = false
+	m.discoverProbing = false
+	m.discover.SetOwned(nil, nil)
+	m.loadDiscoverCatalog()
+	m.page = PageDiscover
+	return tea.Batch(m.setWindowTitleCmd(), m.maybeProbeDiscover(), m.maybeHydrateDiscover())
 }
 
 func (m *Model) openTokensPage() tea.Cmd {

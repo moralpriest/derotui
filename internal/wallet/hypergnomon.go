@@ -3,8 +3,12 @@
 package wallet
 
 import (
+	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -12,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/deroproject/derohe/rpc"
 	hgindexer "github.com/hypergnomon/hypergnomon/pkg/gnomes/indexer"
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
 	hgstructures "github.com/hypergnomon/hypergnomon/pkg/gnomes/structures"
@@ -154,6 +159,165 @@ func (h *HyperGnomon) ClassOf(scid string) string {
 		return ""
 	}
 	return meta.Class
+}
+
+type CatalogEntry struct {
+	SCID  string
+	Class string
+	Name  string
+	DURL  string
+}
+
+func (h *HyperGnomon) Catalog(class string) []CatalogEntry {
+	if h == nil || h.store == nil || class == "" {
+		return nil
+	}
+	h.mu.Lock()
+	store := h.store
+	h.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	inner := store.Inner()
+	if inner == nil {
+		return nil
+	}
+	insts, err := inner.GetClassInstalls(class, 0)
+	if err != nil || len(insts) == 0 {
+		return nil
+	}
+	out := make([]CatalogEntry, 0, len(insts))
+	for _, inst := range insts {
+		if inst.SCID == "" {
+			continue
+		}
+		e := CatalogEntry{SCID: inst.SCID, Class: class}
+		if inst.Meta != nil {
+			e.Name = inst.Meta.Name
+			e.DURL = inst.Meta.DURL
+			if inst.Meta.Class != "" {
+				e.Class = inst.Meta.Class
+			}
+		}
+		if e.Name == "" {
+			e.Name = e.DURL
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+var catalogNameKeys = []string{"var_header_name", "nameHdr", "name", "metadata"}
+
+func nameFromCatalogVals(vals map[string]string) string {
+	for _, k := range []string{"var_header_name", "namehdr", "name"} {
+		if s := strings.TrimSpace(vals[k]); s != "" {
+			return s
+		}
+	}
+	if meta := vals["metadata"]; meta != "" {
+		var blob map[string]interface{}
+		if err := json.Unmarshal([]byte(meta), &blob); err == nil {
+			if s, _ := blob["name"].(string); strings.TrimSpace(s) != "" {
+				return strings.TrimSpace(s)
+			}
+		}
+	}
+	return ""
+}
+
+func lookupSCVars(endpoint, scid string, keys []string) map[string]string {
+	scid = strings.ToLower(strings.TrimSpace(scid))
+	endpoint = strings.TrimSpace(endpoint)
+	if scid == "" || endpoint == "" || len(keys) == 0 {
+		return nil
+	}
+	rpcURL, err := daemonRPCURL(endpoint)
+	if err != nil {
+		return nil
+	}
+	params := rpc.GetSC_Params{SCID: scid, KeysString: keys}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": "1", "method": "DERO.GetSC", "params": params,
+	})
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := sharedHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+	var rpcResp struct {
+		Result rpc.GetSC_Result `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return nil
+	}
+	vals := map[string]string{}
+	for i, k := range keys {
+		if i >= len(rpcResp.Result.ValuesString) {
+			break
+		}
+		raw := rpcResp.Result.ValuesString[i]
+		if raw == "" || strings.HasPrefix(raw, "NOT AVAILABLE") {
+			continue
+		}
+		if s := decodeSCString(raw); s != "" {
+			vals[strings.ToLower(k)] = s
+		}
+	}
+	return vals
+}
+
+func LookupSCName(endpoint, scid string) string {
+	scid = strings.ToLower(strings.TrimSpace(scid))
+	if scid == "" {
+		return ""
+	}
+	if n, _, _, ok := TokenMetadataFromStore(scid); ok && n != "" {
+		return n
+	}
+	return nameFromCatalogVals(lookupSCVars(endpoint, scid, catalogNameKeys))
+}
+
+func LookupSCOwner(endpoint, scid string) string {
+	vals := lookupSCVars(endpoint, scid, []string{"owner"})
+	if vals == nil {
+		return ""
+	}
+	return strings.TrimSpace(vals["owner"])
+}
+
+func FilterCatalogBySCIDs(entries []CatalogEntry, scids []string) []CatalogEntry {
+	if len(entries) == 0 || len(scids) == 0 {
+		return nil
+	}
+	want := make(map[string]bool, len(scids))
+	for _, s := range scids {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s != "" {
+			want[s] = true
+		}
+	}
+	var out []CatalogEntry
+	for _, e := range entries {
+		if want[strings.ToLower(e.SCID)] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (h *HyperGnomon) SCIDsByClass(class string) []string {
