@@ -139,12 +139,7 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 			setError("No wallet open")
 			return nil
 		}
-		m.tokens = pages.NewTokens()
-		m.tokens.SetLoading(true)
-		m.page = PageTokens
-		m.tokenScanActive = true
-		m.tokens.SetScanning(true, "Starting HyperGnomon discovery...")
-		return tea.Batch(m.loadTokensCmd(), m.discoverTokensCmd(), m.setWindowTitleCmd())
+		return m.openTokensPage()
 
 	case pages.ActionCloseWallet:
 		m.shutdownSession(false)
@@ -646,10 +641,21 @@ func (m *Model) handleDashboard(msg tea.Msg) tea.Cmd {
 			m.dashboard.SetFlashMessage("No wallet open", false)
 			return cmd
 		}
-		m.tokens = pages.NewTokens()
-		m.tokens.SetLoading(true)
-		m.page = PageTokens
-		return tea.Batch(m.loadTokensCmd(), m.setWindowTitleCmd())
+		return m.openTokensPage()
 	}
 	return cmd
+}
+
+func (m *Model) openTokensPage() tea.Cmd {
+	m.tokens.SetSize(m.width, m.height)
+	m.tokens.SetLoading(false)
+	m.page = PageTokens
+	cmds := []tea.Cmd{m.loadTokensCmd(), m.setWindowTitleCmd()}
+	if !m.tokenScanActive {
+		m.tokenScanActive = true
+		m.tokenScanFound = 0
+		m.tokens.SetScanning(true, "Preparing scan...")
+		cmds = append(cmds, m.tokenScanStartCmd(false))
+	}
+	return tea.Batch(cmds...)
 }

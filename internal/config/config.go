@@ -70,14 +70,18 @@ type DaemonSettings struct {
 
 var configMu sync.Mutex
 
-// configPath returns the path to the config file
-func configPath() string {
+// configPathFn is indirected so tests can point the config at a scratch file
+// instead of the user's real ~/.derotui.json.
+var configPathFn = func() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ".derotui.json"
 	}
 	return filepath.Join(home, ".derotui.json")
 }
+
+// configPath returns the path to the config file
+func configPath() string { return configPathFn() }
 
 // Load loads the configuration from disk
 func Load() Config {
@@ -607,6 +611,24 @@ func MergeDiscoveredSCIDs(walletPath string, entries []DiscoveredSCID) error {
 	}
 	cfg.DiscoveredAssets[path] = merged
 	return saveUnlocked(cfg)
+}
+
+// ClearDiscoveredSCIDs drops the reusable candidate cache for a wallet so
+// the next token scan starts from scratch (fresh address-index candidates
+// instead of previously cached holdings).
+func ClearDiscoveredSCIDs(walletPath string) {
+	configMu.Lock()
+	defer configMu.Unlock()
+	cfg := loadUnlocked()
+	if cfg.DiscoveredAssets == nil {
+		return
+	}
+	path, err := filepath.Abs(walletPath)
+	if err != nil {
+		path = walletPath
+	}
+	delete(cfg.DiscoveredAssets, filepath.Clean(path))
+	_ = saveUnlocked(cfg)
 }
 
 // GetTheme returns the selected theme ID (defaults to "neon" if not set)

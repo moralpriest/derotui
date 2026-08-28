@@ -197,20 +197,38 @@ type nameTransferResultMsg struct {
 // hang forever.
 type xswdDialogTimeoutMsg struct{}
 
-// tokensLoadedMsg carries loaded tokens.
+// tokensLoadedMsg carries tokens loaded wallet-locally (balances + tracked
+// SCIDs). Metadata may still be missing; the scan hydrates it incrementally.
 type tokensLoadedMsg struct {
-	tokens   []wallet.TokenInfo
-	err      string
-	scanning bool
-	progress string
+	tokens []wallet.TokenInfo
+	err    string
 }
 
-type tokenScanMsg struct {
-	tokens   []wallet.TokenInfo
-	progress string
-	done     bool
-	err      string
-	retry    bool
+// tokenScanProgressMsg reports one step of the incremental token scan.
+// candidates carries the full candidate list on every step; index is the
+// number of candidates already checked; found holds tokens discovered in
+// this step (balance > 0, metadata hydrated). A msg with candidates != nil
+// and index == 0 starts a scan; index >= len(candidates) finishes it.
+type tokenScanProgressMsg struct {
+	id         int
+	candidates []string
+	index      int
+	found      []wallet.TokenInfo
+	zero       []string
+	err        string
+}
+
+// tokenBalanceRefreshMsg reports re-checked balances for zero-balance
+// candidates registered by an earlier scan. A freshly registered SCID only
+// yields its balance after the wallet's next sync round, so pending
+// candidates are re-checked periodically until they resolve or are removed.
+type tokenBalanceRefreshMsg struct {
+	found   []wallet.TokenInfo
+	pending []string
+}
+
+type tokenMetadataMsg struct {
+	tokens []wallet.TokenInfo
 }
 
 // tokenAddResultMsg carries result of adding a token.

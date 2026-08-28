@@ -127,6 +127,18 @@ func (w *Wallet) ListTokens() []TokenInfo {
 		return nil
 	}
 	balances := w.wallet.Balances()
+	// EntriesNative is populated by TokenAdd before balances are decrypted;
+	// include those SCIDs too so a token is visible while its first sync is
+	// still in progress.
+	tracked := make([]crypto.Hash, 0)
+	for scid := range w.wallet.GetAccount().EntriesNative {
+		tracked = append(tracked, scid)
+	}
+	for _, scid := range tracked {
+		if _, ok := balances[scid]; !ok {
+			balances[scid] = 0
+		}
+	}
 	var out []TokenInfo
 	var zero crypto.Hash
 	for scid, bal := range balances {
@@ -141,18 +153,42 @@ func (w *Wallet) ListTokens() []TokenInfo {
 	return out
 }
 
-// DiscoverTokenBalance registers a SCID and synchronously refreshes its
-// encrypted balance. It is used by the UI's background token scan.
-func (w *Wallet) DiscoverTokenBalance(scidStr string) (TokenInfo, bool) {
-	if err := w.AddToken(scidStr); err != nil {
-		return TokenInfo{}, false
+// ProbeTokenBalance decrypts the wallet address's balance for a SCID
+// straight from the daemon (single RPC) WITHOUT registering the token with
+// the wallet. This is the token-discovery primitive: registration is only
+// worthwhile once a balance is known to exist, because every registration
+// burdens the wallet's sync loop forever (there is no TokenRemove upstream).
+func (w *Wallet) ProbeTokenBalance(scidStr string) (uint64, error) {
+	if w.wallet == nil {
+		return 0, fmt.Errorf("wallet not open")
 	}
-	info := TokenInfo{SCID: strings.ToLower(strings.TrimSpace(scidStr))}
-	balance, err := w.GetTokenBalance(info.SCID)
+	scid, err := parseSCID(scidStr)
 	if err != nil {
-		return info, false
+		return 0, err
 	}
-	info.Balance = balance
+	// Use the wallet's own sync height as topo point: it is always a valid
+	// height and matches what the wallet considers "current".
+	topo := int64(w.wallet.Get_Height())
+	balance, _, err := w.wallet.GetDecryptedBalanceAtTopoHeight(scid, topo, w.wallet.GetAddress().String())
+	return balance, err
+}
+
+// DiscoverTokenBalance probes a SCID's balance for this wallet. When the
+// wallet holds the token it is registered (TokenAdd) so the wallet tracks
+// it from then on; zero-balance candidates are left unregistered.
+func (w *Wallet) DiscoverTokenBalance(scidStr string) (TokenInfo, bool) {
+	scid := strings.ToLower(strings.TrimSpace(scidStr))
+	balance, err := w.ProbeTokenBalance(scid)
+	if err != nil {
+		return TokenInfo{SCID: scid}, false
+	}
+	info := TokenInfo{SCID: scid, Balance: balance}
+	if balance > 0 {
+		_ = w.AddToken(scid)
+		if n, t, d, ok := TokenMetadataFromStore(scid); ok {
+			info.Name, info.Ticker, info.Decimals = n, t, d
+		}
+	}
 	return info, true
 }
 
@@ -182,6 +218,15 @@ func (w *Wallet) GetTokenMetadata(ctx context.Context, scidStr string) (TokenInf
 	info := TokenInfo{SCID: strings.TrimSpace(scidStr)}
 	if err := ValidateSCID(info.SCID); err != nil {
 		return info, err
+	}
+	// Fast path: the local HyperGnomon store already indexed this SC's
+	// name/ticker/decimals. Reading them is a local bbolt lookup instead of a
+	// daemon RPC (DERO.GetSC with Code:true can be the slowest call in the
+	// whole scan — up to the 8s timeout on large contracts). Only fall back
+	// to the daemon when the store has nothing displayable.
+	if n, t, d, ok := TokenMetadataFromStore(info.SCID); ok && (n != "" || t != "") {
+		info.Name, info.Ticker, info.Decimals = n, t, d
+		return info, nil
 	}
 	daemonAddr := w.GetDaemonAddress()
 	if daemonAddr == "" || daemonAddr == "Not connected" {

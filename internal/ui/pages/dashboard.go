@@ -39,25 +39,22 @@ type DashboardModel struct {
 	LockedBalance uint64
 
 	// Wallet info (for header section)
-	WalletName         string
-	Network            string
-	IsOnline           bool
-	IsSynced           bool
-	IsBootstrapping    bool
-	IsRegistered       bool
-	IsRegistering      bool
-	RegPending         bool
-	RegTxID            string
-	RegStatus          string
-	IsConnecting       bool // true while async daemon connection is in progress
-	DaemonAddress      string
-	Height             uint64
-	DaemonHeight       uint64
-	IndexerScanned     int
-	IndexerTotal       int
-	IndexerState       string
-	IndexerLastHeight  int64
-	IndexerChainHeight int64
+	WalletName      string
+	Network         string
+	IsOnline        bool
+	IsSynced        bool
+	IsBootstrapping bool
+	IsRegistered    bool
+	IsRegistering   bool
+	RegPending      bool
+	RegTxID         string
+	RegStatus       string
+	IsConnecting    bool // true while async daemon connection is in progress
+	DaemonAddress   string
+	Height          uint64
+	DaemonHeight    uint64
+	IndexerTotal    int
+	IndexerState    string
 
 	// Display
 	Address   string
@@ -384,18 +381,13 @@ func (d DashboardModel) View() string {
 	heightLine := hudLabel("Height") + heightValue
 	daemonLine := hudLabel("Daemon") + styles.TextStyle.Render(displayDaemon)
 	var indexValue string
-	// Like Height: show N/M with orange/green while indexer is behind chain tip.
-	if d.IndexerChainHeight > 0 && d.IndexerLastHeight < d.IndexerChainHeight && d.IndexerTotal > 0 {
-		indexValue = styles.WarningStyle.Render(fmt.Sprintf("%d", d.IndexerScanned)) +
-			styles.MutedStyle.Render(" / ") +
-			styles.SuccessStyle.Render(fmt.Sprintf("%d", d.IndexerTotal)) +
-			styles.MutedStyle.Render(" SCIDs")
-	} else if d.IndexerState == "complete" || (d.IndexerChainHeight > 0 && d.IndexerLastHeight >= d.IndexerChainHeight && d.IndexerTotal > 0) {
+	switch {
+	case d.IndexerState == "complete":
 		indexValue = styles.SuccessStyle.Render(fmt.Sprintf("%d SCIDs", d.IndexerTotal))
-	} else if d.IndexerState == "scanning" || d.IndexerTotal > 0 {
+	case d.IndexerState == "scanning" || d.IndexerTotal > 0:
 		indexValue = styles.WarningStyle.Render(fmt.Sprintf("%d SCIDs", d.IndexerTotal))
-	} else {
-		indexValue = styles.TextStyle.Render("0 SCIDs")
+	default:
+		indexValue = styles.MutedStyle.Render("—")
 	}
 	hyperLine := hudLabel("Index") + indexValue
 	walletLine := hudLabel("Wallet") + styles.TextStyle.Render(walletLabel)
@@ -787,7 +779,11 @@ func (d *DashboardModel) SetRegistrationPending(txID, status string) {
 	d.RegPending = txID != ""
 }
 
-// SetConnecting sets the connecting state
+func (d *DashboardModel) SetIndexerProgress(total int, state string) {
+	d.IndexerTotal = total
+	d.IndexerState = state
+}
+
 func (d *DashboardModel) SetConnecting(connecting bool) {
 	d.IsConnecting = connecting
 }

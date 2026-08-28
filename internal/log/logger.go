@@ -71,6 +71,7 @@ type Logger struct {
 	mu     sync.RWMutex
 	logger *slog.Logger
 	out    io.Writer
+	file   *os.File
 	level  LogLevel
 	buffer []LogEntry
 	maxBuf int
@@ -306,30 +307,61 @@ func ClearBuffer() {
 	defaultLogger.ClearBuffer()
 }
 
-// Setup initializes logging for the application
-func Setup(debug bool, logDir string) (string, error) {
-	if !debug {
-		SetOutput(io.Discard)
-		return "", nil
+// LogDir returns the directory containing derotui's log files (~/.derotui).
+func LogDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ".derotui"
+	}
+	return filepath.Join(home, ".derotui")
+}
+
+// Setup initializes logging to ~/.derotui/derotui.log. The log is always
+// written: Info-level entries are recorded even without --debug, while
+// debug=true additionally records Debug-level entries. The previous log is
+// rotated to derotui.log.1 on startup so files stay bounded. Returns the
+// log file path.
+func Setup(debug bool) (string, error) {
+	dir := LogDir()
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return "", fmt.Errorf("failed to create log dir: %w", err)
 	}
 
-	if logDir == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			cwd = "."
-		}
-		logDir = cwd
-	}
+	logPath := filepath.Join(dir, "derotui.log")
 
-	logPath := filepath.Join(logDir, "derotui-debug.log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	// Rotate: keep exactly one previous generation.
+	_ = os.Remove(logPath + ".1")
+	_ = os.Rename(logPath, logPath+".1")
+
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 	if err != nil {
 		return "", fmt.Errorf("failed to open log file: %w", err)
 	}
 
+	defaultLogger.mu.Lock()
+	defaultLogger.file = logFile
+	defaultLogger.mu.Unlock()
+
 	SetOutput(logFile)
-	Info("log", "init", "Logging initialized", "path", logPath)
+	if debug {
+		SetLevel(LevelDebug)
+	} else {
+		SetLevel(LevelInfo)
+	}
+	RedirectStandardLog()
+
+	Info("log", "init", "Logging initialized", "path", logPath, "debug", fmt.Sprintf("%v", debug))
 	return logPath, nil
+}
+
+// Close closes the log file, if open. Safe to call multiple times.
+func Close() {
+	defaultLogger.mu.Lock()
+	defer defaultLogger.mu.Unlock()
+	if defaultLogger.file != nil {
+		defaultLogger.file.Close()
+		defaultLogger.file = nil
+	}
 }
 
 // WithContext returns a logger bound to context (for future tracing)

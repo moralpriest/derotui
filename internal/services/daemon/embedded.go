@@ -319,16 +319,15 @@ func readHelperLogFile(network string) []string {
 	return lines
 }
 
+// helperLogFilePath returns the fallback log file for daemon-helper output,
+// kept in derotui's log dir so it is readable regardless of where the binary
+// is installed.
 func helperLogFilePath(network string) string {
-	exename, err := os.Executable()
-	if err != nil {
-		exename = filepath.Join(os.TempDir(), "derotui")
-	}
 	network = strings.TrimSpace(network)
 	if network == "" {
 		network = "mainnet"
 	}
-	return exename + "_daemon_" + network + ".log"
+	return filepath.Join(derolog.LogDir(), "daemon-"+network+".log")
 }
 
 func boolValue(v any) bool     { b, _ := v.(bool); return b }

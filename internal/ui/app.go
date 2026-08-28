@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +33,7 @@ func init() {
 	log.SetOutput(io.Discard)
 }
 
-// DebugLogPath is the path to the debug log file when --debug is enabled
+// DebugLogPath is the path to the unified log file (~/.derotui/derotui.log)
 var DebugLogPath string
 
 const donationAddress = "deroi1qy8zrqrgqgcu6ayznw5zl9a50erdxgjd539rh3hz7qgu4zl4auqzkq9pvfp4x7p4235xzmntypuk7afqg3skgereypg8y6t9wd6zpuylnx8jqjfqwd5xzmrvypex2ur9de6zqf3qvahjqan9vaskup5n768"
@@ -45,43 +46,27 @@ const (
 	txRefreshIntervalOffline   = 30 * time.Second
 )
 
-// SetupLogging configures debug logging when --debug flag is enabled
+// SetupLogging initializes logging to ~/.derotui/derotui.log. The log is
+// always written (Info baseline, so navigation diagnostics survive without
+// --debug); debug=true additionally records Debug-level entries.
 func SetupLogging(debug bool) {
-	if !debug {
-		log.SetOutput(io.Discard)
-		derolog.SetOutput(io.Discard)
-		CloseLogFile()
+	path, err := derolog.Setup(debug)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: Failed to open log file: %v\n", err)
 		return
 	}
 
-	// Get current working directory for absolute path
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
+	DebugLogPath = path
+	if debug {
+		fmt.Printf("Debug log: %s\n", path)
 	}
-	DebugLogPath = filepath.Join(cwd, "derotui-debug.log")
-
-	logFile, err := os.OpenFile(DebugLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "ERROR: Failed to open log file %s: %v\n", DebugLogPath, err)
-		log.SetOutput(io.Discard)
-		return
-	}
-
-	configureDebugLogging(logFile)
-
-	derolog.Info("log", "init", "Logging initialized", "path", DebugLogPath)
-	fmt.Printf("Debug log: %s\n", DebugLogPath)
 }
 
-func configureDebugLogging(logFile *os.File) {
-	// Set up log buffer that captures entries for the debug console
-	SetupLogBuffer(logFile)
-
-	// Set up structured logging
-	derolog.SetOutput(logFile)
-	derolog.SetLevel(derolog.LevelDebug)
-	derolog.RedirectStandardLog()
+// diagLog records navigation diagnostics as Debug-level ui.nav entries in the
+// unified log file. They are only captured when debug logging is enabled and
+// never shown in the debug console (see IsHighSignal).
+func diagLog(format string, args ...interface{}) {
+	derolog.Debug("ui.nav", "diag", fmt.Sprintf(format, args...))
 }
 
 // Page represents the current page
@@ -225,33 +210,39 @@ type Model struct {
 	lastWalletDaemon      string
 
 	// Global debug console state (visible on all pages)
-	debugEnabled       bool
-	debugConsoleOpen   bool
-	debugAutoFollow    bool
-	debugScrollStart   int
-	debugLastClickY    int
-	debugLastClickAt   time.Time
-	debugLogEntries    []derolog.LogEntry
-	regHintShown       bool
-	pendingRegTxID     string
-	pendingRegStatus   string
-	pendingRegHeight   uint64
-	pendingOutgoing    map[string]pendingOutgoingTx
-	startupFlowSet     bool
-	lastDaemonRetry    time.Time
-	daemonRetryAfter   time.Duration
-	lastTxRefreshAt    time.Time
-	tokenScanActive    bool
-	daemonManager      *daemonservice.Manager
-	embeddedDaemon     *daemonservice.EmbeddedDaemon
-	rpcMiner           minerservice.RPCBackend
-	daemonManagedSince time.Time
-	lastEmbeddedError  string
-	pendingPrune       bool
-	pruneAppliedOnce   bool
-	applyingPrune      bool
-	hyperGnomon        *wallet.HyperGnomon
-	hyperMu            *sync.Mutex
+	debugEnabled     bool
+	debugConsoleOpen bool
+	debugAutoFollow  bool
+	debugScrollStart int
+	debugLastClickY  int
+	debugLastClickAt time.Time
+	debugLogEntries  []derolog.LogEntry
+	regHintShown     bool
+	pendingRegTxID   string
+	pendingRegStatus string
+	pendingRegHeight uint64
+	pendingOutgoing  map[string]pendingOutgoingTx
+	startupFlowSet   bool
+	lastDaemonRetry  time.Time
+	daemonRetryAfter time.Duration
+	lastTxRefreshAt  time.Time
+	tokenScanActive  bool
+	// Incremental token scan state (see tokenScanProgressMsg).
+	tokenScanID         int
+	tokenScanCandidates []string
+	tokenScanPending    []string
+	tokenRecheckActive  bool
+	tokenScanFound      int
+	daemonManager       *daemonservice.Manager
+	embeddedDaemon      *daemonservice.EmbeddedDaemon
+	rpcMiner            minerservice.RPCBackend
+	daemonManagedSince  time.Time
+	lastEmbeddedError   string
+	pendingPrune        bool
+	pruneAppliedOnce    bool
+	applyingPrune       bool
+	hyperGnomon         *wallet.HyperGnomon
+	hyperMu             *sync.Mutex
 }
 
 type pendingOutgoingTx struct {
@@ -453,7 +444,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	// Diagnostic: record every keypress while on a daemon page so an
-	// unexpected back-out can be traced from ~/.derotui/diag.log alone.
+	// unexpected back-out can be traced from ~/.derotui/derotui.log alone.
 	switch m.page {
 	case PageDaemonStatus, PageDaemonLogs, PageDaemonSettings:
 		if kp, ok := msg.(tea.KeyPressMsg); ok {
@@ -465,6 +456,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		if m.page == PageTokens {
+			var cmd tea.Cmd
+			m.tokens, cmd = m.tokens.Update(msg)
+			return m, cmd
+		}
 		return m, nil
 
 	case tea.MouseClickMsg:
@@ -530,7 +526,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.page = PageHistory
 				return m, m.setWindowTitleCmd()
 			case PageTokens:
-				m.tokens.Reset()
 				m.page = PageMain
 				return m, m.setWindowTitleCmd()
 			case PageTokenSend:
@@ -624,15 +619,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateDashboardLogEntries()
 		}
 		cmds = append(cmds, m.daemonTickCmd())
-		cmds = append(cmds, m.minerStatsCmd())
-		// Update wallet info periodically
+		cmds = append(cmds, m.minerStatsCmd()) // Update wallet info periodically
 		if m.wallet != nil {
-			if m.page == PageTokens && !m.tokenScanActive {
-				// Keep discovery alive: the indexer can add candidates after the
-				// initial page load as new blocks are indexed.
-				m.tokenScanActive = true
-				m.tokens.SetScanning(true, "Refreshing HyperGnomon candidates...")
-				cmds = append(cmds, m.discoverTokensCmd())
+			// Silently re-check balances of scan candidates whose encrypted
+			// balances had not synced yet: they appear as soon as the wallet's
+			// sync round resolves them, no manual rescan needed.
+			if m.page == PageTokens && len(m.tokenScanPending) > 0 && !m.tokenRecheckActive {
+				m.tokenRecheckActive = true
+				cmds = append(cmds, m.recheckTokenBalancesCmd(dedupeStrings(m.tokenScanPending)))
 			}
 			cmds = append(cmds, m.updateWalletInfo())
 			// Update title to reflect current balance and sync status
@@ -920,6 +914,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dashboard.SetConnecting(true) // Always show connecting until daemon connection completes
 			m.dashboard.IndexerState = "scanning"
 			m.page = PageMain
+			// Token discovery starts automatically as soon as the wallet session
+			// is connected; the Tokens page only displays the shared results.
 			if addr := m.preferredDaemonAddress(); addr != "" {
 				m.ensureHyperGnomon(addr, network)
 			}
@@ -1144,94 +1140,89 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, m.setWindowTitleCmd(), m.loadNamesCmd())
 		}
 
-	case tokenScanMsg:
-		m.tokenScanActive = false
-		m.tokens.SetScanning(true, msg.progress)
-		m.updateHyperDashboard()
-		if msg.err != "" {
-			m.tokens.SetError(msg.err)
-		}
-		if msg.done {
-			m.tokens.SetLoading(false)
-		}
-		if len(msg.tokens) > 0 {
-			// Merge discovered tokens with existing list to preserve names
-			// fetched by loadTokensCmd. discoverTokensCmd now fetches metadata,
-			// but loadTokensCmd may have raced and already set names.
-			existing := m.tokens.Tokens()
-			bySCID := make(map[string]wallet.TokenInfo, len(existing)+len(msg.tokens))
-			for _, t := range existing {
-				bySCID[strings.ToLower(t.SCID)] = t
-			}
-			for _, t := range msg.tokens {
-				key := strings.ToLower(t.SCID)
-				if cur, ok := bySCID[key]; ok {
-					if t.Name != "" {
-						cur.Name = t.Name
-					}
-					if t.Ticker != "" {
-						cur.Ticker = t.Ticker
-					}
-					if t.Decimals != 0 {
-						cur.Decimals = t.Decimals
-					}
-					if t.Balance != 0 {
-						cur.Balance = t.Balance
-					}
-					bySCID[key] = cur
-				} else {
-					bySCID[key] = t
-				}
-			}
-			merged := make([]wallet.TokenInfo, 0, len(bySCID))
-			for _, v := range bySCID {
-				merged = append(merged, v)
-			}
-			m.tokens.SetTokens(merged)
-		}
-
-	case tokensLoadedMsg:
-		if m.page != PageTokens {
+	case tokenScanProgressMsg:
+		if msg.id != 0 && msg.id != m.tokenScanID {
 			break
 		}
 		if msg.err != "" {
+			m.tokenScanActive = false
+			m.tokens.SetScanning(false, "")
 			m.tokens.SetError(msg.err)
-		} else {
-			// Merge to preserve names discovered by the concurrent discoverTokensCmd
-			existing := m.tokens.Tokens()
-			if len(existing) == 0 {
-				m.tokens.SetTokens(msg.tokens)
-			} else {
-				bySCID := make(map[string]wallet.TokenInfo, len(existing)+len(msg.tokens))
-				for _, t := range existing {
-					bySCID[strings.ToLower(t.SCID)] = t
-				}
-				for _, t := range msg.tokens {
-					key := strings.ToLower(t.SCID)
-					if cur, ok := bySCID[key]; ok {
-						if cur.Name == "" && t.Name != "" {
-							cur.Name = t.Name
-						}
-						if cur.Ticker == "" && t.Ticker != "" {
-							cur.Ticker = t.Ticker
-						}
-						if cur.Decimals == 0 && t.Decimals != 0 {
-							cur.Decimals = t.Decimals
-						}
-						if t.Balance != 0 {
-							cur.Balance = t.Balance
-						}
-						bySCID[key] = cur
-					} else {
-						bySCID[key] = t
+			break
+		}
+		if msg.candidates != nil {
+			m.tokenScanCandidates = msg.candidates
+			if msg.index == 0 {
+				// Fresh scan: reset accumulated state.
+				m.tokenScanFound = 0
+				m.tokenScanPending = nil
+			}
+		}
+		if len(msg.found) > 0 {
+			m.tokenScanFound += len(msg.found)
+			m.mergeDiscoveredTokens(msg.found)
+			if cmd := m.hydrateTokenMetadataCmd(msg.found); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+		if len(msg.zero) > 0 {
+			m.tokenScanPending = append(m.tokenScanPending, msg.zero...)
+		}
+		total := len(m.tokenScanCandidates)
+		if msg.index >= total {
+			m.tokenScanActive = false
+			m.tokens.SetScanning(false, "")
+			if m.wallet != nil && total > 0 {
+				height := m.wallet.GetInfo().DaemonHeight
+				entries := make([]config.DiscoveredSCID, 0, len(m.tokens.Tokens()))
+				for _, t := range m.tokens.Tokens() {
+					if t.Balance > 0 {
+						entries = append(entries, config.DiscoveredSCID{SCID: t.SCID, Source: "wallet", LastCheckedHeight: height, LastSeen: time.Now()})
 					}
 				}
-				merged := make([]wallet.TokenInfo, 0, len(bySCID))
-				for _, v := range bySCID {
-					merged = append(merged, v)
+				if len(entries) > 0 {
+					_ = config.MergeDiscoveredSCIDs(m.walletFile, entries)
 				}
-				m.tokens.SetTokens(merged)
 			}
+			m.tokens.SetFlash(fmt.Sprintf("Scan complete: %d %s with balance (%d candidates checked)",
+				m.tokenScanFound, plural(m.tokenScanFound, "token"), total), true)
+			m.updateHyperDashboard()
+			break
+		}
+		m.tokens.SetScanning(true, fmt.Sprintf("Checking %d/%d — %d %s found",
+			msg.index+1, total, m.tokenScanFound, plural(m.tokenScanFound, "token")))
+		cmds = append(cmds, m.tokenScanStepCmd(m.tokenScanCandidates, msg.index))
+
+	case tokenBalanceRefreshMsg:
+		m.tokenRecheckActive = false
+		m.tokenScanPending = msg.pending
+		if len(msg.found) > 0 {
+			m.mergeDiscoveredTokens(msg.found)
+			if cmd := m.hydrateTokenMetadataCmd(msg.found); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+			if m.wallet != nil {
+				height := m.wallet.GetInfo().DaemonHeight
+				entries := make([]config.DiscoveredSCID, 0, len(msg.found))
+				for _, t := range msg.found {
+					entries = append(entries, config.DiscoveredSCID{SCID: t.SCID, Source: "wallet", LastCheckedHeight: height, LastSeen: time.Now()})
+				}
+				_ = config.MergeDiscoveredSCIDs(m.walletFile, entries)
+			}
+			m.tokens.SetFlash(fmt.Sprintf("Synced: %d new %s appeared", len(msg.found), plural(len(msg.found), "token")), true)
+		}
+
+	case tokenMetadataMsg:
+		m.mergeDiscoveredTokens(msg.tokens)
+
+	case tokensLoadedMsg:
+		m.tokens.SetLoading(false)
+		if msg.err != "" {
+			if m.page == PageTokens {
+				m.tokens.SetError(msg.err)
+			}
+		} else {
+			m.mergeDiscoveredTokens(msg.tokens)
 		}
 	case tokenAddResultMsg:
 		if msg.err != "" {
@@ -1239,8 +1230,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tokens.SetFlash(msg.err, false)
 		} else {
 			m.tokens.SetFlash("Token added: "+msg.scid[:8]+"...", true)
-			m.tokens.SetLoading(true)
-			cmds = append(cmds, m.loadTokensCmd(), m.discoverTokensCmd())
+			m.tokens.SetLoading(false)
+			m.tokenScanActive = true
+			m.tokenScanFound = 0
+			cmds = append(cmds, m.loadTokensCmd(), m.tokenScanStartCmd(false))
 		}
 	case tokenSendResultMsg:
 		if msg.err != "" {
@@ -1306,9 +1299,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ensureHyperGnomon(addr, netLabel)
 			}
 			m.updateHyperDashboard()
-			if m.page == PageTokens {
-				m.tokens.SetScanning(true, "Refreshing token metadata...")
-				cmds = append(cmds, m.loadTokensCmd(), m.discoverTokensCmd())
+			if m.wallet != nil && !m.tokenScanActive {
+				m.tokenScanActive = true
+				m.tokenScanFound = 0
+				if m.page == PageTokens {
+					m.tokens.SetScanning(true, "Preparing scan...")
+					cmds = append(cmds, m.loadTokensCmd())
+				}
+				cmds = append(cmds, m.tokenScanStartCmd(false))
 			}
 			// Keep global debug state stable across page transitions.
 			// Only sync dashboard indicator from current global state.
@@ -1426,12 +1424,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-	case logUpdateMsg:
-		// Update debug entries on all pages while enabled
-		if m.Opts.Debug {
-			m.updateDashboardLogEntries()
-		}
-
 	case debugToggleResultMsg:
 		if msg.err != nil {
 			if m.page == PageWelcome {
@@ -1481,7 +1473,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if result.page != before {
 		// Diagnostic: every page transition is logged so an unexpected jump
 		// back to welcome can be traced in the F12 debug console and the file.
-		diagLog("transition %d -> %d trigger=%T", before, result.page, msg)
 		derolog.Info("ui", "page.transition", fmt.Sprintf("Page %d -> %d", before, result.page),
 			"trigger", fmt.Sprintf("%T", msg), "page", fmt.Sprintf("%d", result.page))
 	}
@@ -1527,6 +1518,7 @@ func (m *Model) shutdownSession(quitting bool) {
 	if quitting {
 		m.quitting = true
 		m.closeHyperGnomon()
+		derolog.Close()
 	}
 }
 
@@ -1568,23 +1560,87 @@ func (m *Model) stampHyperHUD(h *wallet.HyperGnomon) {
 	if h == nil {
 		return
 	}
-	scids, last, chain, status := h.Progress()
-	m.dashboard.IndexerScanned = scids
-	m.dashboard.IndexerTotal = scids
-	m.dashboard.IndexerLastHeight = last
-	m.dashboard.IndexerChainHeight = chain
-	// Complete when indexer reports indexed and heights claim tip.
-	if chain > 0 && last >= chain {
-		m.dashboard.IndexerState = "complete"
-	} else if status == "indexed" && scids > 0 && chain > 0 && last >= chain {
-		m.dashboard.IndexerState = "complete"
-	} else if scids > 0 || last > 0 || chain > 0 || status != "" {
-		if m.dashboard.IndexerState != "complete" {
-			m.dashboard.IndexerState = "scanning"
-		}
-	} else if m.dashboard.IndexerState == "" {
-		m.dashboard.IndexerState = "scanning"
+	scids, last, chain, _ := h.Progress()
+	state := "scanning"
+	if chain > 0 && last+2 >= chain {
+		state = "complete"
 	}
+	m.dashboard.SetIndexerProgress(scids, state)
+}
+
+func (m *Model) mergeDiscoveredTokens(tokens []wallet.TokenInfo) {
+	existing := m.tokens.Tokens()
+	bySCID := make(map[string]wallet.TokenInfo, len(existing)+len(tokens))
+	for _, t := range existing {
+		bySCID[strings.ToLower(t.SCID)] = t
+	}
+	for _, t := range tokens {
+		key := strings.ToLower(t.SCID)
+		cur, ok := bySCID[key]
+		if !ok {
+			bySCID[key] = t
+			continue
+		}
+		if t.Name != "" {
+			cur.Name = t.Name
+		}
+		if t.Ticker != "" {
+			cur.Ticker = t.Ticker
+		}
+		if t.Decimals != 0 {
+			cur.Decimals = t.Decimals
+		}
+		if t.Balance != 0 {
+			cur.Balance = t.Balance
+		}
+		bySCID[key] = cur
+	}
+	merged := make([]wallet.TokenInfo, 0, len(bySCID))
+	for _, v := range bySCID {
+		merged = append(merged, v)
+	}
+	sort.Slice(merged, func(i, j int) bool {
+		ki, kj := tokenSortKey(merged[i]), tokenSortKey(merged[j])
+		if ki != kj {
+			return ki < kj
+		}
+		return merged[i].SCID < merged[j].SCID
+	})
+	m.tokens.SetTokens(merged)
+}
+
+// tokenSortKey returns the primary display label used to order the token list.
+func tokenSortKey(t wallet.TokenInfo) string {
+	switch {
+	case t.Ticker != "":
+		return strings.ToLower(t.Ticker)
+	case t.Name != "":
+		return strings.ToLower(t.Name)
+	default:
+		return t.SCID
+	}
+}
+
+// plural returns word with an "s" appended unless n == 1.
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// dedupeStrings returns s without duplicates, preserving order.
+func dedupeStrings(s []string) []string {
+	seen := make(map[string]bool, len(s))
+	out := s[:0]
+	for _, v := range s {
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 func (m *Model) closeHyperGnomon() {
@@ -1597,6 +1653,19 @@ func (m *Model) closeHyperGnomon() {
 		m.hyperGnomon.Close()
 		m.hyperGnomon = nil
 	}
+}
+
+func (m *Model) hyperProgress() (scids int, lastHeight int64, chainHeight int64, status string) {
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h == nil {
+		return 0, 0, 0, ""
+	}
+	return h.Progress()
 }
 
 func (m *Model) hyperSCIDs() []string {
@@ -2084,9 +2153,16 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		m.tokens, cmd = m.tokens.Update(msg)
 		cmds = append(cmds, cmd)
 		if m.tokens.Cancelled() {
-			m.tokens.Reset()
+			m.tokens.ClearCancelled()
 			m.page = PageMain
 			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if m.tokens.WantRescan() {
+			m.tokens.ResetActions()
+			m.tokenScanActive = true
+			m.tokenScanFound = 0
+			m.tokens.SetScanning(true, "Scanning all indexed SCIDs...")
+			cmds = append(cmds, m.tokenScanStartCmd(true))
 		}
 		if scid, ok := m.tokens.WantAdd(); ok {
 			m.tokens.ResetActions()

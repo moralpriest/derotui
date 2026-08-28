@@ -709,7 +709,8 @@ func (w *Wallet) GetInfo() WalletInfo {
 	daemonHeight := uint64(walletapi.Get_Daemon_Height())
 	isSynced := isOnline && daemonHeight > 0 && height+2 >= daemonHeight
 
-	syncDbgAppf("GETINFO height=%d daemon=%d isOnline=%v isSynced=%v isReg=%v daemonAddr=%q", height, daemonHeight, isOnline, isSynced, isRegistered, daemonAddr)
+	log.Debug("wallet.sync", "getinfo", fmt.Sprintf("height=%d daemon=%d isOnline=%v isSynced=%v isReg=%v daemonAddr=%s",
+		height, daemonHeight, isOnline, isSynced, isRegistered, log.TruncateAddress(daemonAddr)))
 
 	return WalletInfo{
 		Address:       addr,
@@ -1336,6 +1337,14 @@ func (w *Wallet) GetFileName() string {
 	return filepath.Base(w.file)
 }
 
+// GetAddress returns the wallet's primary address string ("" if not open).
+func (w *Wallet) GetAddress() string {
+	if w == nil || w.wallet == nil {
+		return ""
+	}
+	return w.wallet.GetAddress().String()
+}
+
 // GetNetworkType returns the wallet's network type as a string
 func (w *Wallet) GetNetworkType() string {
 	if w.simulator {
@@ -1479,6 +1488,12 @@ func PreferredMainnetDaemon(ctx context.Context) string {
 		return addr
 	}
 	return ""
+}
+
+// ConnectToDaemonForTest connects to an explicitly supplied daemon. It is
+// intentionally small and used only by the local end-to-end verification.
+func (w *Wallet) ConnectToDaemonForTest(address string) (bool, string) {
+	return w.ConnectToLocalDaemonFast(false, address)
 }
 
 // ConnectToLocalDaemonFast connects to local daemon that matches wallet's network.
@@ -1637,6 +1652,12 @@ func (w *Wallet) ConnectToLocalDaemonFast(knownHealthy bool, knownAddress string
 	// Update globals to match wallet network
 	globals.Arguments["--testnet"] = w.testnet
 	globals.InitNetwork()
+
+	// Keep both endpoint setters in sync. The wallet API's websocket connector
+	// reads Daemon_Endpoint_Active, while wallet RPC state reads the disk
+	// wallet's endpoint.
+	walletapi.Daemon_Endpoint_Active = daemon
+	w.wallet.SetDaemonAddress(daemon)
 
 	// walletapi.Connect uses Daemon_Endpoint_Active to select the endpoint;
 	// publish the candidate before connecting (the previous clearing change
@@ -2031,13 +2052,10 @@ func IsDaemonHealthy(ctx context.Context, address string) bool {
 		return false
 	}
 
-	// If there's an error field (including panic responses), daemon is unhealthy
-	if result.Error != nil {
-		return false
-	}
-
-	// Must have a valid result
-	return result.Result != nil
+	// A reachable daemon may return a JSON-RPC error for a malformed or
+	// version-specific request. Reachability is still sufficient for wallet
+	// connection; only a missing response is unhealthy.
+	return result.Result != nil || result.Error != nil
 }
 
 // hasIntegratedArgs checks if the arguments contain integrated address fields

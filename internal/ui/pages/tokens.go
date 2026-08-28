@@ -15,10 +15,24 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 )
 
-// TokensModel is the token/asset management page.
+const (
+	tokColTicker = 10
+	tokColName   = 22
+	tokColBal    = 14
+	tokColSCID   = 19
+	tokensInner  = tokColTicker + tokColName + tokColBal + tokColSCID
+	tokVisible   = 10
+)
+
+var (
+	tokensUpKeys   = key.NewBinding(key.WithKeys("up", "k"))
+	tokensDownKeys = key.NewBinding(key.WithKeys("down", "j"))
+)
+
 type TokensModel struct {
 	tokens         []wallet.TokenInfo
 	cursor         int
+	offset         int
 	loading        bool
 	scanning       bool
 	scanProgress   string
@@ -33,6 +47,8 @@ type TokensModel struct {
 	wantHistory    bool
 	wantRemove     bool
 	wantAdd        bool
+	wantRescan     bool
+	wantResetScan  bool
 	pendingAddSCID string
 	selectedSCID   string
 	lastClickRow   int
@@ -41,7 +57,6 @@ type TokensModel struct {
 	height         int
 }
 
-// NewTokens creates a new tokens page.
 func NewTokens() TokensModel {
 	m := TokensModel{cursor: 0, lastClickRow: -1}
 	m.addInput = components.NewInput("", "SCID (64 hex chars)", false)
@@ -49,8 +64,18 @@ func NewTokens() TokensModel {
 	return m
 }
 
-// SetTokens sets the token list.
+func (m *TokensModel) SetSize(width, height int) {
+	m.width = width
+	m.height = height
+}
+
+func (m *TokensModel) ClearCancelled() { m.cancelled = false }
+
 func (m *TokensModel) SetTokens(tokens []wallet.TokenInfo) {
+	if len(tokens) == 0 && len(m.tokens) > 0 {
+		m.loading = false
+		return
+	}
 	m.tokens = tokens
 	m.loading = false
 	m.err = ""
@@ -59,26 +84,47 @@ func (m *TokensModel) SetTokens(tokens []wallet.TokenInfo) {
 	}
 	if len(m.tokens) == 0 {
 		m.cursor = 0
+		m.offset = 0
+	}
+	m.clampOffset()
+}
+
+func (m *TokensModel) clampOffset() {
+	vis := tokVisible
+	if m.cursor < m.offset {
+		m.offset = m.cursor
+	}
+	if m.cursor >= m.offset+vis {
+		m.offset = m.cursor - vis + 1
+	}
+	if m.offset < 0 {
+		m.offset = 0
 	}
 }
 
-// SetLoading sets loading state.
+func tokenCells(tok wallet.TokenInfo) (ticker, name, bal, scid string) {
+	ticker = tok.Ticker
+	name = tok.Name
+	if ticker == "" && name == "" {
+		ticker = clip(safeSCIDLabel(tok.SCID), tokColTicker)
+	}
+	bal = wallet.FormatTokenAmount(tok.Balance, tok.Decimals)
+	scid = safeSCIDLabel(tok.SCID)
+	return clip(ticker, tokColTicker), clip(name, tokColName), clip(bal, tokColBal), clip(scid, tokColSCID)
+}
+
 func (m *TokensModel) SetLoading(v bool) { m.loading = v }
 func (m *TokensModel) SetScanning(v bool, progress string) {
 	m.scanning = v
 	m.scanProgress = progress
 }
 
-// SetError sets error.
 func (m *TokensModel) SetError(s string) { m.err = s; m.loading = false }
 
-// SetFlash sets flash message.
 func (m *TokensModel) SetFlash(msg string, good bool) { m.flash = msg; m.flashGood = good }
 
-// Cancelled reports if user cancelled.
 func (m TokensModel) Cancelled() bool { return m.cancelled }
 
-// WantSend reports if user wants to send the selected token.
 func (m TokensModel) WantSend() (string, bool) {
 	if m.wantSend && m.cursor >= 0 && m.cursor < len(m.tokens) {
 		return m.tokens[m.cursor].SCID, true
@@ -89,7 +135,6 @@ func (m TokensModel) WantSend() (string, bool) {
 	return "", false
 }
 
-// WantHistory reports if user wants history for selected token.
 func (m TokensModel) WantHistory() (string, bool) {
 	if m.wantHistory && m.cursor >= 0 && m.cursor < len(m.tokens) {
 		return m.tokens[m.cursor].SCID, true
@@ -97,7 +142,6 @@ func (m TokensModel) WantHistory() (string, bool) {
 	return "", false
 }
 
-// WantRemove reports if user wants to remove selected token from tracking.
 func (m TokensModel) WantRemove() (string, bool) {
 	if m.wantRemove && m.cursor >= 0 && m.cursor < len(m.tokens) {
 		return m.tokens[m.cursor].SCID, true
@@ -105,16 +149,12 @@ func (m TokensModel) WantRemove() (string, bool) {
 	return "", false
 }
 
-// GetAddSCID returns the SCID being added (when confirmed).
 func (m TokensModel) GetAddSCID() string { return strings.TrimSpace(m.addInput.Value()) }
 
-// IsAdding reports if in add mode.
 func (m TokensModel) IsAdding() bool { return m.adding }
 
-// Tokens returns the token list.
 func (m TokensModel) Tokens() []wallet.TokenInfo { return m.tokens }
 
-// WantAdd reports if user confirmed adding a token.
 func (m TokensModel) WantAdd() (string, bool) {
 	if m.wantAdd {
 		return m.pendingAddSCID, true
@@ -122,19 +162,24 @@ func (m TokensModel) WantAdd() (string, bool) {
 	return "", false
 }
 
-// ResetActions clears action flags.
+func (m TokensModel) WantRescan() bool { return m.wantRescan }
+
+func (m TokensModel) WantResetScan() bool { return false }
+
 func (m *TokensModel) ResetActions() {
 	m.wantSend = false
 	m.wantHistory = false
 	m.wantRemove = false
 	m.wantAdd = false
+	m.wantRescan = false
+	m.wantResetScan = false
 	m.pendingAddSCID = ""
 	m.selectedSCID = ""
 }
 
-// Reset clears state for re-display.
 func (m *TokensModel) Reset() {
 	m.cursor = 0
+	m.offset = 0
 	m.err = ""
 	m.flash = ""
 	m.cancelled = false
@@ -144,21 +189,29 @@ func (m *TokensModel) Reset() {
 	m.adding = false
 	m.addError = ""
 	m.addInput.Reset()
-	m.wantSend = false
-	m.wantHistory = false
-	m.wantRemove = false
-	m.wantAdd = false
-	m.pendingAddSCID = ""
-	m.selectedSCID = ""
+	m.ResetActions()
 	m.lastClickRow = -1
 }
 
 func (m TokensModel) Init() tea.Cmd { return nil }
 
+func (m *TokensModel) cursorUp() {
+	if m.cursor > 0 {
+		m.cursor--
+		m.clampOffset()
+	}
+}
+
+func (m *TokensModel) cursorDown() {
+	if m.cursor < len(m.tokens)-1 {
+		m.cursor++
+		m.clampOffset()
+	}
+}
+
 func (m TokensModel) Update(msg tea.Msg) (TokensModel, tea.Cmd) {
 	var cmd tea.Cmd
 
-	// Add mode has its own handling.
 	if m.adding {
 		switch msg := msg.(type) {
 		case tea.KeyPressMsg:
@@ -187,26 +240,22 @@ func (m TokensModel) Update(msg tea.Msg) (TokensModel, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.SetSize(msg.Width, msg.Height)
+		return m, nil
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, pageEscKeys):
 			m.cancelled = true
-			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("up", "k"))):
-			if m.cursor > 0 {
-				m.cursor--
-			}
-			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("down", "j"))):
-			if m.cursor < len(m.tokens)-1 {
-				m.cursor++
-			}
 			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
 			m.adding = true
 			m.addError = ""
 			m.addInput.Reset()
 			return m, m.addInput.Focus()
+		case key.Matches(msg, key.NewBinding(key.WithKeys("r", "R"))):
+			m.wantRescan = true
+			return m, nil
 		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
 			if len(m.tokens) > 0 && !m.loading {
 				m.wantSend = true
@@ -227,19 +276,24 @@ func (m TokensModel) Update(msg tea.Msg) (TokensModel, tea.Cmd) {
 				m.wantSend = true
 			}
 			return m, nil
+		case key.Matches(msg, tokensUpKeys):
+			m.cursorUp()
+			return m, nil
+		case key.Matches(msg, tokensDownKeys):
+			m.cursorDown()
+			return m, nil
 		}
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		return m, nil
 	}
 	return m, nil
 }
 
-func (m TokensModel) View() string {
-	var content string
-	if m.loading {
+func tokensTitle(text string) string {
+	return styles.TitleStyle.Width(tokensInner).Align(lipgloss.Center).Render(text)
+}
 
+func (m TokensModel) View() string {
+	var body strings.Builder
+	if m.loading && len(m.tokens) == 0 && !m.adding {
 		status := "Loading..."
 		if m.scanning {
 			status = "Scanning token contracts..."
@@ -247,114 +301,136 @@ func (m TokensModel) View() string {
 				status += "\n" + m.scanProgress
 			}
 		}
-		content = lipgloss.JoinVertical(lipgloss.Center,
-			styles.TitleStyle.Render("Tokens"),
+		content := lipgloss.JoinVertical(lipgloss.Left,
+			tokensTitle("Tokens"),
 			"",
-			styles.MutedStyle.Render(status),
+			styles.MutedStyle.Width(tokensInner).Align(lipgloss.Center).Render(status),
 		)
-	} else if m.adding {
-		b := strings.Builder{}
-		b.WriteString(styles.TitleStyle.Render("Add Token"))
-		b.WriteString("\n\n")
-		b.WriteString(styles.MutedStyle.Render("Enter the token SCID (64 hex chars) to track:"))
-		b.WriteString("\n\n")
-		b.WriteString(m.addInput.View())
-		b.WriteString("\n")
+		return tokensBox(content)
+	}
+	if m.adding {
+		body.WriteString(styles.MutedStyle.Render("Enter the token SCID (64 hex chars) to track:"))
+		body.WriteString("\n\n")
+		body.WriteString(m.addInput.View())
+		body.WriteString("\n")
 		if m.addError != "" {
-			b.WriteString(styles.ErrorStyle.Render("✗ " + m.addError))
-			b.WriteString("\n")
+			body.WriteString(styles.ErrorStyle.Render("✗ " + m.addError))
+			body.WriteString("\n")
 		}
-		b.WriteString("\n")
-		b.WriteString(styles.MutedStyle.Render("[Enter] Add  [Esc] Cancel"))
-		content = lipgloss.JoinVertical(lipgloss.Center, b.String())
-	} else {
-		var b strings.Builder
-		if m.scanning && m.scanProgress != "" {
-			b.WriteString(styles.MutedStyle.Render("⟳ " + m.scanProgress))
-			b.WriteString("\n\n")
-		}
-		if m.err != "" {
-			b.WriteString(styles.ErrorStyle.Width(styles.Width - 8).Render("✗ " + m.err))
-			b.WriteString("\n\n")
-		}
-		if len(m.tokens) == 0 {
-			if m.scanning {
-				b.WriteString(styles.WarningStyle.Render("Discovering tokens in the background..."))
-				b.WriteString("\n")
-			} else {
-				b.WriteString(styles.MutedStyle.Render("No tokens found in this wallet"))
-				b.WriteString("\n")
-			}
-			b.WriteString("\n")
-			b.WriteString(styles.MutedStyle.Render("Press [A] to add a token SCID to track"))
-			b.WriteString("\n\n")
-		}
-		for i, tok := range m.tokens {
-			prefix := "  "
-			nameStyle := styles.MutedStyle
-			if i == m.cursor {
-				prefix = lipgloss.NewStyle().Foreground(styles.ColorPrimary).Render("▸ ")
-				nameStyle = lipgloss.NewStyle().Foreground(styles.ColorText).Bold(true)
-			}
-			displayName := safeSCIDLabel(tok.SCID)
-			if tok.Ticker != "" {
-				displayName = tok.Ticker
-				if tok.Name != "" && tok.Name != tok.Ticker {
-					displayName += " (" + tok.Name + ")"
-				}
-			} else if tok.Name != "" {
-				displayName = tok.Name
-			} else {
-				displayName = safeSCIDLabel(tok.SCID)
-			}
-			balStr := wallet.FormatTokenAmount(tok.Balance, tok.Decimals)
-			line := prefix + nameStyle.Render(displayName) + "  " + styles.BalanceStyle.Render(balStr)
-			if tok.Ticker == "" && tok.Name == "" {
-				line += "  " + styles.MutedStyle.Render(truncateSCID(tok.SCID, 16))
-			}
-			b.WriteString(line)
-			b.WriteString("\n")
-			// Second line: SCID truncated muted
-			if tok.Ticker != "" || tok.Name != "" {
-				scidLine := "    " + styles.MutedStyle.Render(truncateSCID(tok.SCID, 16))
-				b.WriteString(scidLine)
-				b.WriteString("\n")
-			}
-		}
-		if m.flash != "" {
-			style := styles.ErrorStyle
-			if m.flashGood {
-				style = styles.SuccessStyle
-			}
-			b.WriteString(style.Render(m.flash))
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
-		footer := fmt.Sprintf("[A]dd  %s  %s  %s  [Esc] Back",
-			dimIf(len(m.tokens) == 0, "[S]end"),
-			dimIf(len(m.tokens) == 0, "[H]istory"),
-			dimIf(len(m.tokens) == 0, "[D]elete"),
-		)
-		b.WriteString(styles.MutedStyle.Render(footer))
-		content = lipgloss.JoinVertical(lipgloss.Center,
-			styles.TitleStyle.Render("Tokens"),
-			"",
-			b.String(),
-		)
+		body.WriteString("\n")
+		body.WriteString(styles.MutedStyle.Render("[Enter] Add  [Esc] Cancel"))
+		content := lipgloss.JoinVertical(lipgloss.Left, tokensTitle("Add Token"), "", body.String())
+		return tokensBox(content)
 	}
 
+	if m.scanning && m.scanProgress != "" {
+		body.WriteString(styles.MutedStyle.Render("⟳ " + m.scanProgress))
+		body.WriteString("\n\n")
+	}
+	if m.err != "" {
+		body.WriteString(styles.ErrorStyle.Width(tokensInner).Render("✗ " + m.err))
+		body.WriteString("\n\n")
+	}
+	if len(m.tokens) == 0 {
+		if m.scanning {
+			body.WriteString(styles.WarningStyle.Render("Discovering tokens in the background..."))
+			body.WriteString("\n")
+		} else {
+			body.WriteString(styles.MutedStyle.Render("No tokens found in this wallet"))
+			body.WriteString("\n")
+		}
+		body.WriteString("\n")
+		body.WriteString(styles.MutedStyle.Render("Press [A] to add a token SCID to track"))
+		body.WriteString("\n\n")
+	} else {
+		body.WriteString(m.renderTable())
+		body.WriteString("\n")
+	}
+	if m.flash != "" {
+		style := styles.ErrorStyle
+		if m.flashGood {
+			style = styles.SuccessStyle
+		}
+		body.WriteString(style.Render(m.flash))
+		body.WriteString("\n")
+	}
+	body.WriteString("\n")
+	footer := fmt.Sprintf("[A]dd  %s  %s  %s  [R]escan  [Esc] Back",
+		dimIf(len(m.tokens) == 0, "[S]end"),
+		dimIf(len(m.tokens) == 0, "[H]istory"),
+		dimIf(len(m.tokens) == 0, "[D]elete"),
+	)
+	body.WriteString(styles.MutedStyle.Render(footer))
+	content := lipgloss.JoinVertical(lipgloss.Left, tokensTitle("Tokens"), "", body.String())
+	return tokensBox(content)
+}
+
+func tokensBox(content string) string {
 	return styles.ThemedBoxStyle().
 		Width(styles.Width).
-		Align(lipgloss.Center).
+		Align(lipgloss.Left).
 		Padding(1, 4).
 		Render(content)
 }
 
-func truncateSCID(scid string, prefix int) string {
-	if len(scid) <= prefix {
-		return scid
+func (m TokensModel) renderTable() string {
+	header := tokHeaderRow()
+	sep := styles.StyledSeparator(tokensInner)
+	end := m.offset + tokVisible
+	if end > len(m.tokens) {
+		end = len(m.tokens)
 	}
-	return scid[:prefix] + "..."
+	var rows []string
+	for i := m.offset; i < end; i++ {
+		rows = append(rows, tokRenderRow(m.tokens[i], i == m.cursor))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, header, sep, lipgloss.JoinVertical(lipgloss.Left, rows...))
+}
+
+func tokHeaderRow() string {
+	st := lipgloss.NewStyle().Bold(true).Foreground(styles.ColorMuted)
+	return lipgloss.JoinHorizontal(lipgloss.Left,
+		st.Width(tokColTicker).Render("Ticker"),
+		st.Width(tokColName).Render("Name"),
+		st.Width(tokColBal).Render("Balance"),
+		st.Width(tokColSCID).Render("SCID"),
+	)
+}
+
+func tokRenderRow(tok wallet.TokenInfo, selected bool) string {
+	ticker, name, bal, scid := tokenCells(tok)
+	if selected {
+		st := lipgloss.NewStyle().
+			Background(styles.ColorPrimary).
+			Foreground(styles.ColorText).
+			Bold(true)
+		return lipgloss.JoinHorizontal(lipgloss.Left,
+			st.Width(tokColTicker).Render(ticker),
+			st.Width(tokColName).Render(name),
+			st.Width(tokColBal).Render(bal),
+			st.Width(tokColSCID).Render(scid),
+		)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Left,
+		lipgloss.NewStyle().Width(tokColTicker).Foreground(styles.ColorPrimary).Render(ticker),
+		lipgloss.NewStyle().Width(tokColName).Foreground(styles.ColorText).Render(name),
+		lipgloss.NewStyle().Width(tokColBal).Foreground(styles.ColorText).Render(bal),
+		lipgloss.NewStyle().Width(tokColSCID).Foreground(styles.ColorMuted).Render(scid),
+	)
+}
+
+func clip(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= width {
+		return s
+	}
+	if width == 1 {
+		return string(r[:1])
+	}
+	return string(r[:width-1]) + "…"
 }
 
 func safeSCIDLabel(scid string) string {
@@ -364,29 +440,30 @@ func safeSCIDLabel(scid string) string {
 	return scid[:8] + "..." + scid[len(scid)-8:]
 }
 
-// HandleMouse handles mouse for tokens page.
 func (m TokensModel) HandleMouse(msg tea.MouseClickMsg, windowWidth, windowHeight int) TokensModel {
-	if m.adding {
+	if m.adding || len(m.tokens) == 0 {
 		return m
 	}
 	row := msg.Mouse().Y
-	titleOffset := 5
+	titleOffset := 6
 	if m.err != "" {
 		titleOffset += 2
 	}
-	row = row - titleOffset
-	// Each token uses 1 or 2 lines; approximate as 2 lines per token for hit testing.
-	idx := row / 2
-	if idx < 0 || idx >= len(m.tokens) {
+	if m.scanning && m.scanProgress != "" {
+		titleOffset += 2
+	}
+	row = row - titleOffset + m.offset
+	if row < 0 || row >= len(m.tokens) {
 		return m
 	}
-	m.cursor = idx
+	m.cursor = row
+	m.clampOffset()
 	if msg.Button == tea.MouseLeft {
 		now := time.Now()
-		if m.lastClickRow == idx && now.Sub(m.lastClickAt) < 500*time.Millisecond {
+		if m.lastClickRow == row && now.Sub(m.lastClickAt) < 500*time.Millisecond {
 			m.wantSend = true
 		}
-		m.lastClickRow = idx
+		m.lastClickRow = row
 		m.lastClickAt = now
 	}
 	return m

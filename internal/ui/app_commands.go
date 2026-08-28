@@ -5,12 +5,9 @@ package ui
 import (
 	"context"
 	"fmt"
-	"io"
-	"log"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -22,6 +19,20 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 	"github.com/deroproject/derohe/globals"
 	"github.com/deroproject/derohe/walletapi"
+)
+
+// tokenScanBatchSize is how many candidates a single token-scan step probes.
+// tokenScanWorkers bounds the concurrent daemon RPCs per step (the daemon can
+// comfortably multiplex this many; the wallet's own sync loop shares the
+// connection).
+const (
+	tokenScanBatchSize = 64
+	tokenScanWorkers   = 24
+	// tokenScanProbeTimeout bounds one batch of balance probes. Daemon RPCs
+	// carry a 30s ceiling, but a half-open connection can still stall a whole
+	// batch past what a responsive node ever takes; past this the scan stops
+	// with a visible error instead of silently appearing stuck.
+	tokenScanProbeTimeout = 20 * time.Second
 )
 
 // connectToDaemon returns a command that connects to the daemon.
@@ -76,32 +87,17 @@ func (m *Model) storeRestoreSeed(seed string) tea.Cmd {
 }
 
 // toggleDebugLoggingCmd returns a command that toggles debug logging on/off.
-// It performs side effects in the command and returns a message that mutates model state in Update.
+// The unified log file is always open (Info baseline); toggling only raises
+// the level to Debug or back to Info.
 func (m Model) toggleDebugLoggingCmd(openConsole bool) tea.Cmd {
 	enable := !m.Opts.Debug
 	return func() tea.Msg {
-		if !enable {
-			// Disable debug logging
-			log.SetOutput(io.Discard)
-			derolog.SetOutput(io.Discard)
-			CloseLogFile()
-			return debugToggleResultMsg{enabled: false}
+		if enable {
+			derolog.SetLevel(derolog.LevelDebug)
+			return debugToggleResultMsg{enabled: true, logPath: DebugLogPath, open: openConsole}
 		}
-
-		cwd, err := os.Getwd()
-		if err != nil {
-			cwd = "."
-		}
-		logPath := filepath.Join(cwd, "derotui-debug.log")
-		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
-		if err != nil {
-			return debugToggleResultMsg{err: err}
-		}
-
-		DebugLogPath = logPath
-		configureDebugLogging(logFile)
-
-		return debugToggleResultMsg{enabled: true, logPath: logPath, open: openConsole}
+		derolog.SetLevel(derolog.LevelInfo)
+		return debugToggleResultMsg{enabled: false}
 	}
 }
 
@@ -259,9 +255,6 @@ func (m *Model) applyRegPoll(msg regPollMsg) {
 // updateDashboardLogEntries updates the global debug log entries (filtered for high-signal).
 func (m *Model) updateDashboardLogEntries() {
 	entries := derolog.GetBuffer()
-	if buffer := GetLogBuffer(); buffer != nil {
-		entries = append(entries, buffer.GetEntries()...)
-	}
 
 	var filtered []derolog.LogEntry
 	for _, entry := range entries {
@@ -605,6 +598,10 @@ func (m *Model) preferredDaemonAddress() string {
 func (m *Model) connectWalletToDaemonAsync() tea.Cmd {
 	w := m.wallet
 	preferred := m.preferredDaemonAddress()
+	if preferred == "" && m.wallet != nil {
+		preferred = m.wallet.GetDaemonAddress()
+	}
+
 	return func() tea.Msg {
 		if w == nil {
 			return walletDaemonConnectedMsg{connected: false, err: "Wallet not open"}
@@ -741,23 +738,40 @@ func (m *Model) loadTokensCmd() tea.Cmd {
 		if w == nil {
 			return tokensLoadedMsg{err: "wallet not open"}
 		}
-		// Register the known SCID before the first balance snapshot. TokenAdd
+		// Register known SCIDs before the first balance snapshot. TokenAdd
 		// updates the wallet's tracked encrypted-balance maps; reading ListTokens
 		// before this call can permanently miss a token after reopening.
+		// Tracked SCIDs come from the user; discovered SCIDs are holdings the
+		// scan found in earlier sessions. Both must be re-registered here:
+		// wallet registrations do not survive a restart.
 		tracked := config.GetWalletTokens(walletFile)
 		for _, scid := range tracked {
 			_ = w.AddToken(scid)
 		}
+		discovered := config.GetDiscoveredSCIDs(walletFile)
+		for _, c := range discovered {
+			_ = w.AddToken(c.SCID)
+		}
 		tokens := w.ListTokens()
-		// Merge tracked tokens from config (zero-balance). The wallet API only
-		// exposes balances for SCIDs registered with TokenAdd; therefore tracked
-		// SCIDs are needed to discover owned tokens after reopening a wallet.
+		// Merge tracked + discovered tokens from config (zero-balance). The
+		// wallet API only exposes balances for SCIDs registered with TokenAdd;
+		// therefore config SCIDs are needed to discover owned tokens after
+		// reopening a wallet. Balances resolve once the wallet has synced them;
+		// [R] rescan re-checks.
 		seen := make(map[string]bool)
 		for _, t := range tokens {
 			seen[strings.ToLower(t.SCID)] = true
 		}
 		for _, scid := range tracked {
 			scid = strings.ToLower(strings.TrimSpace(scid))
+			if scid == "" || seen[scid] {
+				continue
+			}
+			seen[scid] = true
+			tokens = append(tokens, wallet.TokenInfo{SCID: scid})
+		}
+		for _, c := range discovered {
+			scid := strings.ToLower(strings.TrimSpace(c.SCID))
 			if scid == "" || seen[scid] {
 				continue
 			}
@@ -786,16 +800,26 @@ func (m *Model) loadTokensCmd() tea.Cmd {
 	}
 }
 
-// discoverTokensCmd incrementally refreshes cached candidates. The indexer hook
-// is intentionally isolated here so a future HyperGnomon client can provide
-// candidates without coupling the token page to storage details.
-func (m *Model) discoverTokensCmd() tea.Cmd {
+// tokenScanStartCmd begins an incremental token scan. It gathers candidate
+// SCIDs and returns the first tokenScanProgressMsg; the verification itself
+// runs in concurrent batches (see tokenScanStepCmd) so the UI can show live
+// progression without one daemon RPC round-trip per candidate.
+//
+// Candidate priority: manually tracked, previously discovered holdings, then
+// HyperGnomon's fast address reverse index (only the SCIDs this wallet's
+// address actually interacted with — orders of magnitude fewer than the full
+// chain index). The exhaustive full-SCID list is used only as a fallback
+// when the address index yields nothing (indexer still warming, or a wallet
+// that has never touched an SC directly).
+func (m *Model) tokenScanStartCmd(exhaustive bool) tea.Cmd {
+	m.tokenScanID++
+	id := m.tokenScanID
 	w := m.wallet
 	walletFile := m.walletFile
 	model := m
 	return func() tea.Msg {
 		if w == nil {
-			return tokenScanMsg{err: "wallet not open", done: true}
+			return tokenScanProgressMsg{id: id, err: "wallet not open"}
 		}
 		// Prefer the app-owned HyperGnomon which starts at launch without a
 		// wallet. Fall back to the wallet-owned indexer only when the app
@@ -808,88 +832,194 @@ func (m *Model) discoverTokensCmd() tea.Cmd {
 			walletSCIDs = w.HyperGnomonSCIDs()
 			appSCIDs = model.hyperSCIDs()
 		}
-		known := config.GetDiscoveredSCIDs(walletFile)
-		if tracked := config.GetWalletTokens(walletFile); len(tracked) > 0 {
-			for _, scid := range tracked {
-				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "tracked"})
+		// Fast path: the addr_scids reverse index for this wallet's address.
+		// HyperGnomon builds it while indexing, so this is a direct per-address
+		// scan, not a crawl of every SC on chain. If the reverse index is not
+		// populated yet, use every indexed SCID so an explicit rescan still
+		// finds tokens for wallets whose address has not been indexed in the
+		// reverse map.
+		addrSCIDs := model.hyperAddressSCIDs(w.GetAddress())
+		seen := make(map[string]bool)
+		var candidates []string
+		add := func(scid string) {
+			scid = strings.ToLower(strings.TrimSpace(scid))
+			if scid == "" || seen[scid] {
+				return
 			}
+			seen[scid] = true
+			candidates = append(candidates, scid)
 		}
-		// Always verify manually configured SCIDs too. This makes a known
-		// holding visible even when the indexer has not indexed that contract.
+		// Manually tracked tokens first: they belong to the user, so their
+		// balances resolve as soon as the wallet has synced them.
 		for _, scid := range config.GetWalletTokens(walletFile) {
-			known = append(known, config.DiscoveredSCID{SCID: scid, Source: "tracked"})
+			add(scid)
 		}
-		seen := make(map[string]bool, len(known))
-		for _, candidate := range known {
-			seen[strings.ToLower(strings.TrimSpace(candidate.SCID))] = true
+		// Then previously discovered holdings.
+		for _, c := range config.GetDiscoveredSCIDs(walletFile) {
+			add(c.SCID)
 		}
-		// HyperGnomon may still be warming its database when this command
-		// runs. Read its candidates after startup and merge them into the
-		// reusable registry; never return early from a progress update.
-		for _, scid := range appSCIDs {
-			scid = strings.ToLower(strings.TrimSpace(scid))
-			if scid != "" && !seen[scid] {
-				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "hypergnomon"})
-				seen[scid] = true
+		for _, scid := range addrSCIDs {
+			add(scid)
+		}
+		if exhaustive || len(addrSCIDs) == 0 {
+			for _, scid := range appSCIDs {
+				add(scid)
 			}
-		}
-		for _, scid := range walletSCIDs {
-			scid = strings.ToLower(strings.TrimSpace(scid))
-			if scid != "" && !seen[scid] {
-				known = append(known, config.DiscoveredSCID{SCID: scid, Source: "hypergnomon"})
-				seen[scid] = true
+			for _, scid := range walletSCIDs {
+				add(scid)
 			}
 		}
-		var tokens []wallet.TokenInfo
-		for i, candidate := range known {
-			info, ok := w.DiscoverTokenBalance(candidate.SCID)
-			if ok && info.Balance > 0 {
-				tokens = append(tokens, info)
-			}
-			if i%10 == 0 {
-				// Progress is represented by the dashboard's next periodic update;
-				// keep this command focused on the bounded verification pass.
-				continue
-			}
-		}
-		for i := range tokens {
-			meta, _ := w.GetTokenMetadata(context.Background(), tokens[i].SCID)
-			if meta.Name != "" {
-				tokens[i].Name = meta.Name
-			}
-			if meta.Ticker != "" {
-				tokens[i].Ticker = meta.Ticker
-			}
-			if meta.Decimals != 0 {
-				tokens[i].Decimals = meta.Decimals
-			}
-		}
-		if len(tokens) > 0 {
-			entries := make([]config.DiscoveredSCID, 0, len(tokens))
-			height := w.GetInfo().DaemonHeight
-			for _, token := range tokens {
-				entries = append(entries, config.DiscoveredSCID{SCID: token.SCID, Source: "wallet", LastCheckedHeight: height, LastSeen: time.Now()})
-			}
-			_ = config.MergeDiscoveredSCIDs(walletFile, entries)
-		}
-		return tokenScanMsg{tokens: tokens, progress: fmt.Sprintf("HyperGnomon indexed %d candidates; checked %d assets", len(known), len(known)), done: false, retry: true}
+		// Do not remove registered SCIDs from the scan. TokenAdd registration
+		// does not guarantee that the wallet's decrypted balance map has been
+		// populated yet (especially immediately after opening a wallet), and
+		// filtering them here can turn a real holding into an empty scan.
+		// Existing balances are cheap to verify and are merged idempotently.
+		return tokenScanProgressMsg{id: id, candidates: candidates}
 	}
 }
 
-func (m *Model) scanTokensCmd() tea.Cmd {
+// knownWalletSCIDs returns the set of SCIDs the open wallet is already
+// tracking (present in its decrypted balances map — i.e. registered via
+// TokenAdd and synced at least once).
+func knownWalletSCIDs(w *wallet.Wallet) map[string]bool {
+	out := make(map[string]bool)
+	if w == nil {
+		return out
+	}
+	for _, t := range w.ListTokens() {
+		out[strings.ToLower(strings.TrimSpace(t.SCID))] = true
+	}
+	return out
+}
+
+// hyperAddressSCIDs returns the SCIDs the open wallet's address interacted
+// with, preferring the app-owned HyperGnomon store and falling back to the
+// wallet-owned indexer.
+func (m *Model) hyperAddressSCIDs(addr string) []string {
+	if m.hyperMu != nil {
+		m.hyperMu.Lock()
+		h := m.hyperGnomon
+		m.hyperMu.Unlock()
+		if h != nil {
+			if scids := h.SCIDsForAddress(addr); len(scids) > 0 {
+				return scids
+			}
+		}
+	}
+	if m.wallet != nil {
+		if scids := m.wallet.HyperGnomonSCIDsForAddress(addr); len(scids) > 0 {
+			return scids
+		}
+	}
+	return nil
+}
+
+// tokenScanStepCmd verifies a batch of candidates: registers each with the
+// wallet, reads its wallet-local encrypted balance, and hydrates metadata for
+// tokens that actually hold a balance. Candidates in a batch are probed
+// concurrently (the daemon RPC round-trip dominates per-candidate cost), so a
+// scan finishes in batch-size fewer UI round-trips. Zero-balance candidates
+// are skipped — they are either not owned or not yet synced by the wallet.
+func (m *Model) tokenScanStepCmd(candidates []string, index int) tea.Cmd {
+	id := m.tokenScanID
 	w := m.wallet
 	return func() tea.Msg {
 		if w == nil {
-			return tokensLoadedMsg{err: "wallet not open"}
+			return tokenScanProgressMsg{id: id, candidates: candidates, index: len(candidates), err: "wallet not open"}
 		}
-		// The wallet API cannot enumerate private token balances. The daemon's
-		// indexed SC list is the discovery source, while balance checks remain
-		// wallet-local and encrypted.
-		daemonAddr := w.GetDaemonAddress()
-		if daemonAddr == "" || daemonAddr == "Not connected" {
-			return tokensLoadedMsg{err: "daemon not connected; token scan unavailable"}
+		if index < 0 || index >= len(candidates) {
+			return tokenScanProgressMsg{id: id, candidates: candidates, index: len(candidates)}
 		}
-		return tokensLoadedMsg{tokens: w.ListTokens(), scanning: false}
+		end := index + tokenScanBatchSize
+		if end > len(candidates) {
+			end = len(candidates)
+		}
+		done := make(chan tokenScanBatchResult, 1)
+		go func() {
+			sem := make(chan struct{}, tokenScanWorkers)
+			results := make([]struct {
+				info wallet.TokenInfo
+				ok   bool
+			}, end-index)
+			var wg sync.WaitGroup
+			for i := index; i < end; i++ {
+				sem <- struct{}{}
+				wg.Add(1)
+				go func(scid string, slot int) {
+					defer wg.Done()
+					defer func() { <-sem }()
+					info, ok := w.DiscoverTokenBalance(scid)
+					results[slot] = struct {
+						info wallet.TokenInfo
+						ok   bool
+					}{info, ok}
+				}(candidates[i], i-index)
+			}
+			wg.Wait()
+			var found []wallet.TokenInfo
+			var zero []string
+			for _, r := range results {
+				if !r.ok {
+					continue
+				}
+				if r.info.Balance > 0 {
+					// Do not serialize metadata RPCs behind the balance probes.
+					// The token is already useful and visible; metadata is hydrated
+					// by the normal token-load path on the next refresh.
+					found = append(found, r.info)
+				} else {
+					// Registered, but the wallet has not synced this SCID yet —
+					// its balance may resolve on a later sync round.
+					zero = append(zero, r.info.SCID)
+				}
+			}
+			done <- tokenScanBatchResult{found: found, zero: zero}
+		}()
+		select {
+		case r := <-done:
+			return tokenScanProgressMsg{id: id, candidates: candidates, index: end, found: r.found, zero: r.zero}
+		case <-time.After(tokenScanProbeTimeout):
+			return tokenScanProgressMsg{
+				id:         id,
+				candidates: candidates,
+				index:      len(candidates),
+				err:        "daemon not responding — scan paused; check the daemon connection and rescan",
+			}
+		}
+	}
+}
+
+// tokenScanBatchResult aggregates one probe batch.
+type tokenScanBatchResult struct {
+	found []wallet.TokenInfo
+	zero  []string
+}
+
+// recheckTokenBalancesCmd re-probes candidates whose balance was zero at
+// scan time (transfers may have landed since). One daemon RPC per candidate;
+// unregistered candidates stay unregistered until they show a balance.
+func (m *Model) recheckTokenBalancesCmd(pending []string) tea.Cmd {
+	w := m.wallet
+	return func() tea.Msg {
+		if w == nil || len(pending) == 0 {
+			return tokenBalanceRefreshMsg{}
+		}
+		var found []wallet.TokenInfo
+		var still []string
+		for _, scid := range pending {
+			bal, err := w.ProbeTokenBalance(scid)
+			if err != nil || bal == 0 {
+				still = append(still, scid)
+				continue
+			}
+			info := wallet.TokenInfo{SCID: scid, Balance: bal}
+			if n, t, d, ok := wallet.TokenMetadataFromStore(scid); ok {
+				info.Name, info.Ticker, info.Decimals = n, t, d
+			}
+			_ = w.AddToken(scid)
+			found = append(found, info)
+		}
+		return tokenBalanceRefreshMsg{found: found, pending: still}
 	}
 }
 
@@ -912,6 +1042,33 @@ func (m *Model) addTokenCmd(scid string) tea.Cmd {
 			return tokenAddResultMsg{scid: scid, err: ""}
 		}
 		return tokenAddResultMsg{scid: scid}
+	}
+}
+
+func (m *Model) hydrateTokenMetadataCmd(tokens []wallet.TokenInfo) tea.Cmd {
+	w := m.wallet
+	var need []string
+	for _, t := range tokens {
+		if t.Ticker == "" && t.Name == "" && t.SCID != "" {
+			need = append(need, t.SCID)
+		}
+	}
+	if w == nil || len(need) == 0 {
+		return nil
+	}
+	return func() tea.Msg {
+		out := make([]wallet.TokenInfo, 0, len(need))
+		for _, scid := range need {
+			meta, err := w.GetTokenMetadata(context.Background(), scid)
+			if err != nil || (meta.Name == "" && meta.Ticker == "" && meta.Decimals == 0) {
+				continue
+			}
+			out = append(out, meta)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return tokenMetadataMsg{tokens: out}
 	}
 }
 

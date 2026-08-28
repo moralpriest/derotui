@@ -117,3 +117,42 @@ func TestDashboardHUDIndexShownWithoutTokenScan(t *testing.T) {
 		t.Fatalf("Index row missing on wallet dashboard:\n%s", plain)
 	}
 }
+
+func TestDashboardHUDIndexSCIDCountNoFraction(t *testing.T) {
+	d := pages.NewDashboard()
+	d.SetWalletInfo("main.db", "Mainnet", true, true, true, "127.0.0.1:10102", 100, 200)
+	d.SetIndexerProgress(42, "scanning")
+	plain := stripANSI(d.View())
+	var indexLine string
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "Index:") {
+			indexLine = line
+			break
+		}
+	}
+	if indexLine == "" {
+		t.Fatalf("Index row missing:\n%s", plain)
+	}
+	if !strings.Contains(indexLine, "42 SCIDs") {
+		t.Fatalf("Index should show SCID count, got %q", indexLine)
+	}
+	if strings.Contains(indexLine, "/") {
+		t.Fatalf("Index should not show a fraction: %q", indexLine)
+	}
+
+	d.SetIndexerProgress(42, "complete")
+	plain = stripANSI(d.View())
+	indexLine = ""
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, "Index:") {
+			indexLine = line
+			break
+		}
+	}
+	if !strings.Contains(indexLine, "42 SCIDs") {
+		t.Fatalf("complete Index should show SCID count, got %q", indexLine)
+	}
+	if strings.Contains(indexLine, "✓") {
+		t.Fatalf("Index should not show a checkmark: %q", indexLine)
+	}
+}

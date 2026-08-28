@@ -430,6 +430,45 @@ func (p PageModel) View() string { ... }
 - `Esc` to close wallet
 - `Q` to quit
 
+### Tokens
+- `A` - Add token SCID to track
+- `R` - Rescan (re-runs candidate verification with live progress)
+- `N` - Reset scan from scratch (clears the persisted discovered-SCID cache and
+  in-memory scan state, then re-discovers from the index)
+- `S` - Send selected token
+- `H` - Token history
+- `D`/`X` - Remove from tracking
+- `Enter` - Send selected token
+- `Esc` - Back to dashboard
+- **Aligned table**: tokens render in a `charm.land/bubbles/v2/table` component
+  (Token / SCID / Balance columns) with full-row selection matching the
+  history page. The table's default keymap is replaced with one that only
+  binds up/down so page action keys (`d`, `s`, `h`, `a`, `r`, `n`) keep
+  working. Scroll is handled by the table's viewport.
+- The scan runs incrementally with visible progression
+  (`Checking 12/120 — 3 tokens found`) and a completion flash
+  (`Scan complete: N tokens with balance (M candidates checked)`)
+- **Fast path**: candidates come from HyperGnomon's `addr_scids` reverse index
+  (`HyperGnomon.SCIDsForAddress`), so a wallet only probes the SCIDs its own
+  address actually interacted with instead of every SC on chain. The
+  exhaustive full-index list is used only when the address index yields
+  nothing (indexer still warming). Candidates are probed in concurrent batches
+  (`tokenScanBatchSize`/`tokenScanWorkers`) — the daemon balance RPC, not the
+  index, dominates per-candidate cost.
+- **No redundant work**: candidates the wallet already tracks (registered via
+  `TokenAdd` and present in `Balances()`) are skipped entirely — their
+  balances update via the wallet sync loop and the periodic recheck. Metadata
+  is read from the local HyperGnomon store first (`TokenMetadataFromStore`),
+  so the slow daemon `DERO.GetSC` RPC only runs for SCIDs the index hasn't
+  indexed yet.
+- **Never stuck**: the page clears its loading flag as soon as the wallet-local
+  token list arrives (even when empty), so scan progress is always visible.
+  Each probe batch is bounded by `tokenScanProbeTimeout` — a non-responsive
+  daemon stops the scan with a visible error instead of an eternal
+  "Loading...".
+- Candidates with zero balance are skipped: they are either not owned or not
+  yet synced by the wallet (TokenAdd balances arrive on the next sync round)
+
 ### Transaction History
 - Arrow keys to navigate
 - Enter to view details
@@ -493,6 +532,27 @@ func (p PageModel) View() string { ... }
 - Confirmation required for sensitive operations
 
 ## Technical Notes
+
+### Logging
+All derotui logs go to a single file: `~/.derotui/derotui.log`, owned by
+`internal/log.Setup()`. The log is **always written** at Info level (page
+transitions, wallet lifecycle, errors) so diagnostics exist even without
+`--debug`; the `--debug` flag or the F12 toggle just raises the level to
+Debug. The previous log is rotated to `derotui.log.1` on each startup.
+Components: `ui`/`ui.nav` (navigation, keypress diagnostics), `wallet.sync`,
+`daemon`, `log`. Daemon-helper fallback logs live at
+`~/.derotui/daemon-<network>.log` (`internal/services/daemon/embedded.go`).
+The debug console (F12) shows high-signal entries from the in-memory logger
+buffer (`derolog.GetBuffer()`); `ui.nav`/`diag` entries are file-only.
+
+### Daemon RPC Timeouts
+Wallet daemon RPCs (`derohe/walletapi/daemon_communication.go`) run through
+`Client.Call`, which now wraps `jrpc2.CallResult` in a `context.WithTimeout`
+(`daemonCallTimeout = 30s`). Without it, a hung/half-open daemon connection
+blocks the shared RPC queue forever, freezing the wallet sync loop, token
+scans, and transfers behind one unresponsive call. Balance probes use the same
+path, so the token scan additionally bounds each batch with
+`tokenScanProbeTimeout` to fail visibly instead of silently stalling.
 
 ### Lipgloss Width and ANSI Codes
 When using `lipgloss.Width()` or `lipgloss.Center()` on strings containing ANSI escape codes (styled/colored text), the escape codes are included in the character count. This causes:

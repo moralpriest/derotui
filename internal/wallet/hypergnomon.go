@@ -66,7 +66,7 @@ func NewHyperGnomon(endpoint, network string, dbDir string, parallelBlocks int) 
 	}
 	idx.Endpoint = endpoint
 	if parallelBlocks <= 0 {
-		parallelBlocks = 8
+		parallelBlocks = 16
 	}
 	idx.StartDaemonMode(parallelBlocks)
 	h := &HyperGnomon{index: idx, store: store, endpoint: endpoint, network: network}
@@ -90,6 +90,33 @@ func (h *HyperGnomon) SCIDs() []string {
 	owners := store.GetAllOwnersAndSCIDs()
 	out := make([]string, 0, len(owners))
 	for scid := range owners {
+		out = append(out, scid)
+	}
+	return out
+}
+
+// SCIDsForAddress returns the SCIDs an address has interacted with, served
+// from HyperGnomon's addr_scids reverse index (a direct per-address prefix
+// scan). This is the fast token-discovery path: instead of walking every
+// indexed SCID on chain, a wallet only probes the handful of SCIDs it
+// actually touched. Returns nil when the index is unavailable or the address
+// has no recorded interactions (fresh index / never-touched address).
+func (h *HyperGnomon) SCIDsForAddress(addr string) []string {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	h.mu.Lock()
+	store := h.store
+	h.mu.Unlock()
+	if store == nil {
+		return nil
+	}
+	entries, err := store.Inner().GetAddressSCIDs(strings.TrimSpace(addr))
+	if err != nil || len(entries) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for scid := range entries {
 		out = append(out, scid)
 	}
 	return out
@@ -369,6 +396,15 @@ func (w *Wallet) HyperGnomonSCIDs() []string {
 		return nil
 	}
 	return w.hyper.SCIDs()
+}
+
+// HyperGnomonSCIDsForAddress returns the SCIDs the address interacted with,
+// from the wallet-owned indexer's addr_scids reverse index.
+func (w *Wallet) HyperGnomonSCIDsForAddress(addr string) []string {
+	if w == nil || w.hyper == nil {
+		return nil
+	}
+	return w.hyper.SCIDsForAddress(addr)
 }
 
 // CloseHyperGnomon stops the wallet-owned indexer and releases its bbolt lock.
