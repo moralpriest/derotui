@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	discColName  = 28
-	discColClass = 14
-	discColSCID  = 19
-	discInner    = discColName + discColClass + discColSCID
-	discVisible  = 10
+	discColName = 42
+	discColSCID = 19
+	discInner   = discColName + discColSCID
+	discVisible = 10
 )
 
 var (
@@ -337,7 +336,6 @@ func (m DiscoverModel) renderTable(rows []wallet.CatalogEntry) string {
 	st := lipgloss.NewStyle().Bold(true).Foreground(styles.ColorMuted)
 	header := lipgloss.JoinHorizontal(lipgloss.Left,
 		st.Width(discColName).Render("Name"),
-		st.Width(discColClass).Render("Class"),
 		st.Width(discColSCID).Render("SCID"),
 	)
 	sep := styles.StyledSeparator(discInner)
@@ -358,7 +356,6 @@ func discRow(e wallet.CatalogEntry, selected bool) string {
 		name = "—"
 	}
 	name = clip(name, discColName)
-	class := clip(e.Class, discColClass)
 	scid := safeSCIDLabel(e.SCID)
 	if selected {
 		st := lipgloss.NewStyle().
@@ -367,13 +364,11 @@ func discRow(e wallet.CatalogEntry, selected bool) string {
 			Bold(true)
 		return lipgloss.JoinHorizontal(lipgloss.Left,
 			st.Width(discColName).Render(name),
-			st.Width(discColClass).Render(class),
 			st.Width(discColSCID).Render(scid),
 		)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Left,
 		lipgloss.NewStyle().Width(discColName).Foreground(styles.ColorText).Render(name),
-		lipgloss.NewStyle().Width(discColClass).Foreground(styles.ColorPrimary).Render(class),
 		lipgloss.NewStyle().Width(discColSCID).Foreground(styles.ColorMuted).Render(scid),
 	)
 }

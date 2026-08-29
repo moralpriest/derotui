@@ -139,7 +139,7 @@ func NewWelcome() WelcomeModel {
 	ti.Focus()
 
 	commands := []Command{
-		{Name: "/open", Description: "Open wallet", Action: ActionOpen},
+		{Name: "/open", Description: "Open a wallet", Action: ActionOpen},
 		{Name: "/create", Description: "Create a new wallet", Action: ActionCreate},
 		{Name: "/restore", Description: "Restore a wallet", Action: ActionRestore},
 		{Name: "/miner", Description: "Start embedded miner", Action: ActionMiner},

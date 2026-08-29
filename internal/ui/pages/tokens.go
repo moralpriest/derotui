@@ -248,7 +248,7 @@ func (m TokensModel) Update(msg tea.Msg) (TokensModel, tea.Cmd) {
 		case key.Matches(msg, pageEscKeys):
 			m.cancelled = true
 			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("a"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("a", "A"))):
 			m.adding = true
 			m.addError = ""
 			m.addInput.Reset()
@@ -256,17 +256,17 @@ func (m TokensModel) Update(msg tea.Msg) (TokensModel, tea.Cmd) {
 		case key.Matches(msg, key.NewBinding(key.WithKeys("r", "R"))):
 			m.wantRescan = true
 			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("s"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("s", "S"))):
 			if len(m.tokens) > 0 && !m.loading {
 				m.wantSend = true
 			}
 			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("h"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("h", "H"))):
 			if len(m.tokens) > 0 && !m.loading {
 				m.wantHistory = true
 			}
 			return m, nil
-		case key.Matches(msg, key.NewBinding(key.WithKeys("d", "x"))):
+		case key.Matches(msg, key.NewBinding(key.WithKeys("d", "D", "x", "X"))):
 			if len(m.tokens) > 0 && !m.loading {
 				m.wantRemove = true
 			}
@@ -355,10 +355,10 @@ func (m TokensModel) View() string {
 		body.WriteString("\n")
 	}
 	body.WriteString("\n")
-	footer := fmt.Sprintf("[A]dd  %s  %s  %s  [R]escan  [Esc] Back",
-		dimIf(len(m.tokens) == 0, "[S]end"),
+	footer := fmt.Sprintf("↑↓  [A]dd  %s  %s  %s  [R]escan  [Esc] Back",
+		dimIf(len(m.tokens) == 0, "[S]/⏎ Send"),
 		dimIf(len(m.tokens) == 0, "[H]istory"),
-		dimIf(len(m.tokens) == 0, "[D]elete"),
+		dimIf(len(m.tokens) == 0, "[D]/x Del"),
 	)
 	body.WriteString(styles.MutedStyle.Render(footer))
 	content := lipgloss.JoinVertical(lipgloss.Left, tokensTitle("Tokens"), "", body.String())

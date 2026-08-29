@@ -433,8 +433,6 @@ func (p PageModel) View() string { ... }
 ### Tokens
 - `A` - Add token SCID to track
 - `R` - Rescan (re-runs candidate verification with live progress)
-- `N` - Reset scan from scratch (clears the persisted discovered-SCID cache and
-  in-memory scan state, then re-discovers from the index)
 - `S` - Send selected token
 - `H` - Token history
 - `D`/`X` - Remove from tracking
@@ -443,7 +441,7 @@ func (p PageModel) View() string { ... }
 - **Aligned table**: tokens render in a `charm.land/bubbles/v2/table` component
   (Token / SCID / Balance columns) with full-row selection matching the
   history page. The table's default keymap is replaced with one that only
-  binds up/down so page action keys (`d`, `s`, `h`, `a`, `r`, `n`) keep
+  binds up/down so page action keys (`d`, `s`, `h`, `a`, `r`) keep
   working. Scroll is handled by the table's viewport.
 - The scan runs incrementally with visible progression
   (`Checking 12/120 — 3 tokens found`) and a completion flash

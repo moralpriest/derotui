@@ -83,7 +83,7 @@ func (p *PaletteModel) Close() {
 // buildPaletteCommands returns the context-aware command list.
 func buildPaletteCommands(walletOpen bool) []Command {
 	commands := []Command{
-		{Name: "/open", Description: "Open wallet", Action: ActionOpen},
+		{Name: "/open", Description: "Open a wallet", Action: ActionOpen},
 	}
 	if walletOpen {
 		commands = append(commands, Command{Name: "/close", Description: "Close current wallet", Action: ActionCloseWallet})
