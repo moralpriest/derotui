@@ -142,6 +142,7 @@ func NewWelcome() WelcomeModel {
 		{Name: "/open", Description: "Open a wallet", Action: ActionOpen},
 		{Name: "/create", Description: "Create a new wallet", Action: ActionCreate},
 		{Name: "/restore", Description: "Restore a wallet", Action: ActionRestore},
+		{Name: "/discover", Description: "Browse TELA, NFTs, NFA", Action: ActionDiscover},
 		{Name: "/miner", Description: "Start embedded miner", Action: ActionMiner},
 		{Name: "/daemon", Description: "Manage local daemon", Action: ActionDaemon},
 		{Name: "/themes", Description: "Change color theme", Action: ActionThemes},
