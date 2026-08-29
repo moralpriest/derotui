@@ -688,8 +688,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.hyperGnomon == nil || !m.hyperGnomon.IsRunning() {
 			if m.cachedDaemonHealthy && m.cachedDaemonAddress != "" {
-				m.ensureHyperGnomon(m.cachedDaemonAddress, m.cachedDaemonNetwork)
-				m.updateHyperDashboard()
+				cmds = append(cmds, m.ensureHyperGnomonCmd(m.cachedDaemonAddress, m.cachedDaemonNetwork))
 			} else if m.wallet != nil {
 				endpoint := m.wallet.GetDaemonAddress()
 				if endpoint != "" && endpoint != "Not connected" && !m.Opts.Offline {
@@ -700,8 +699,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					} else if nt == "testnet" {
 						netLabel = "Testnet"
 					}
-					m.ensureHyperGnomon(endpoint, netLabel)
-					m.updateHyperDashboard()
+					cmds = append(cmds, m.ensureHyperGnomonCmd(endpoint, netLabel))
 				}
 			}
 		}
@@ -739,8 +737,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(msg.daemons) > 0 {
 			primary := msg.daemons[0]
 			if primary.isOnline && primary.isHealthy {
-				m.ensureHyperGnomon(primary.address, primary.network)
-				m.updateHyperDashboard()
+				cmds = append(cmds, m.ensureHyperGnomonCmd(primary.address, primary.network))
 			}
 		}
 
@@ -757,10 +754,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				addr = m.cachedDaemonAddress
 			}
 			if addr != "" {
-				m.ensureHyperGnomon(addr, msg.info.Network)
-				m.updateHyperDashboard()
+				cmds = append(cmds, m.ensureHyperGnomonCmd(addr, msg.info.Network))
 			}
 		}
+
+	case hyperStartedMsg:
+		cmds = append(cmds, m.handleHyperStarted(msg))
 
 	case daemonInstallPreviewMsg:
 		m.daemonStatus.Downloading = false
@@ -952,7 +951,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Token discovery starts automatically as soon as the wallet session
 			// is connected; the Tokens page only displays the shared results.
 			if addr := m.preferredDaemonAddress(); addr != "" {
-				m.ensureHyperGnomon(addr, network)
+				cmds = append(cmds, m.ensureHyperGnomonCmd(addr, network))
 			}
 			m.updateHyperDashboard()
 			// Don't call updateWalletInfo() here - wait for daemon connection to complete
@@ -1355,7 +1354,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				netLabel = m.wallet.GetNetworkType()
 			}
 			if addr != "" {
-				m.ensureHyperGnomon(addr, netLabel)
+				cmds = append(cmds, m.ensureHyperGnomonCmd(addr, netLabel))
 			}
 			m.updateHyperDashboard()
 			if m.wallet != nil && !m.tokenScanActive {
@@ -1581,13 +1580,17 @@ func (m *Model) shutdownSession(quitting bool) {
 	}
 }
 
-func (m *Model) ensureHyperGnomon(endpoint, network string) {
+// ensureHyperGnomonCmd returns a command that performs the expensive
+// HyperGnomon startup off the UI thread and reports the result via
+// hyperStartedMsg. Cheap pre-checks run synchronously so a healthy,
+// matching indexer never spawns a command.
+func (m *Model) ensureHyperGnomonCmd(endpoint, network string) tea.Cmd {
 	if m.Opts.Offline {
-		return
+		return nil
 	}
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" || endpoint == "Not connected" {
-		return
+		return nil
 	}
 	if strings.TrimSpace(network) == "" {
 		network = "Mainnet"
@@ -1597,30 +1600,70 @@ func (m *Model) ensureHyperGnomon(endpoint, network string) {
 		m.hyperMu = &sync.Mutex{}
 	}
 	m.hyperMu.Lock()
-	defer m.hyperMu.Unlock()
 	if m.hyperGnomon != nil && m.hyperGnomon.IsRunning() {
 		if strings.EqualFold(m.hyperGnomon.Network(), normNet) && m.hyperGnomon.Endpoint() == endpoint {
+			m.hyperMu.Unlock()
 			m.stampHyperHUD(m.hyperGnomon)
-			return
+			return nil
 		}
 		m.hyperGnomon.Close()
 		m.hyperGnomon = nil
 	}
-	h, err := wallet.NewHyperGnomon(endpoint, normNet, "", 8)
-	if err != nil {
-		derolog.Warn("hypergnomon", "start.failed", "failed to start HyperGnomon", "error", err.Error(), "endpoint", endpoint, "network", normNet)
-		return
+	m.hyperMu.Unlock()
+
+	return func() tea.Msg {
+		start := time.Now()
+		h, err := wallet.NewHyperGnomon(endpoint, normNet, "", 8)
+		if err != nil {
+			derolog.Warn("hypergnomon", "start.failed", "failed to start HyperGnomon", "error", err.Error(), "endpoint", endpoint, "network", normNet)
+			return hyperStartedMsg{err: err.Error(), network: normNet}
+		}
+		derolog.Info("hypergnomon", "scan.start", "HyperGnomon started", "endpoint", endpoint, "network", normNet, "startup_ms", fmt.Sprintf("%d", time.Since(start).Milliseconds()))
+		return hyperStartedMsg{hyper: h, network: normNet}
 	}
-	m.hyperGnomon = h
+}
+
+// hyperStartedMsg handler: attach the freshly started indexer, stamp the HUD
+// from its first cached sample, and kick the token scan if a wallet session
+// is ready. Runs inside Update but only does cheap pointer assignment; the
+// heavy startup already happened inside the command.
+func (m *Model) handleHyperStarted(msg hyperStartedMsg) tea.Cmd {
+	if msg.err != "" {
+		return nil
+	}
+	if m.hyperMu == nil {
+		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	already := m.hyperGnomon != nil && m.hyperGnomon.IsRunning()
+	if !already {
+		m.hyperGnomon = msg.hyper
+	}
+	m.hyperMu.Unlock()
+	if already {
+		return nil
+	}
 	m.hyperCompleteLogged = false
-	derolog.Info("hypergnomon", "scan.start", "HyperGnomon started", "endpoint", endpoint, "network", normNet)
-	m.stampHyperHUD(h)
+	m.stampHyperHUD(msg.hyper)
+	if m.wallet != nil && !m.tokenScanActive {
+		m.tokenScanActive = true
+		m.tokenScanFound = 0
+		if m.page == PageTokens {
+			m.tokens.SetScanning(true, "Preparing scan...")
+			return tea.Batch(m.loadTokensCmd(), m.tokenScanStartCmd(false))
+		}
+		return m.tokenScanStartCmd(false)
+	}
+	return nil
 }
 
 func (m *Model) stampHyperHUD(h *wallet.HyperGnomon) {
 	if h == nil {
 		return
 	}
+	// Progress() is served from background-refreshed atomics (see
+	// wallet.HyperGnomon.pollProgress), so stamping the HUD never performs a
+	// synchronous bbolt owners-bucket scan inside Update.
 	scids, last, chain, _ := h.Progress()
 	state := "scanning"
 	if chain > 0 && last+2 >= chain {

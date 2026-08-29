@@ -251,3 +251,15 @@ type tokenHistoryLoadedMsg struct {
 	txs  []wallet.TransactionInfo
 	err  string
 }
+
+// hyperStartedMsg carries the result of the background HyperGnomon startup
+// (dispatched by ensureHyperGnomon). Starting the indexer opens a bbolt store
+// (256 MiB mmap reservation) and builds an 8-connection RPC pool — both far
+// too slow to run inside Update, so the startup runs in a command and lands
+// here. Progress sampling is likewise done by a background poller inside
+// wallet.HyperGnomon; the UI only reads cheap cached values.
+type hyperStartedMsg struct {
+	hyper   *wallet.HyperGnomon
+	err     string
+	network string
+}

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/deroproject/derohe/rpc"
@@ -35,6 +36,20 @@ type HyperGnomon struct {
 	endpoint string
 	network  string
 	started  time.Time
+
+	// Cached progress values, refreshed in the background by a poller
+	// goroutine. Progress() reads these atomics instead of doing a
+	// synchronous bbolt owners-bucket scan on every call, which used to
+	// block the UI thread during startup and periodic ticks.
+	cachedScids      atomic.Int64
+	cachedLastHeight atomic.Int64
+	cachedChain      atomic.Int64
+	cachedStatus     atomic.Pointer[string]
+
+	// stop is closed by Close to end the background poller promptly;
+	// pollDone signals the poller goroutine has exited.
+	stop     chan struct{}
+	pollDone chan struct{}
 }
 
 // NewHyperGnomon creates and starts a standalone bbolt-backed indexer that
@@ -42,6 +57,11 @@ type HyperGnomon struct {
 // ~/.derotui/hypergnomon/{mainnet|testnet|simulator}. The caller owns the
 // returned instance and must call Close when done. parallelBlocks controls the
 // daemon scan parallelism (8 is the historical default).
+//
+// This constructor returns as soon as the store handle is opened and the
+// indexer goroutines are spawned — it does NOT wait for FastSync or the
+// first daemon poll to complete. A background poller started here refreshes
+// the cached progress values served by Progress().
 func NewHyperGnomon(endpoint, network string, dbDir string, parallelBlocks int) (*HyperGnomon, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -76,11 +96,66 @@ func NewHyperGnomon(endpoint, network string, dbDir string, parallelBlocks int) 
 		parallelBlocks = 16
 	}
 	idx.StartDaemonMode(parallelBlocks)
-	h := &HyperGnomon{index: idx, store: store, endpoint: endpoint, network: network, started: time.Now()}
+	h := &HyperGnomon{
+		index:    idx,
+		store:    store,
+		endpoint: endpoint,
+		network:  network,
+		started:  time.Now(),
+		stop:     make(chan struct{}),
+		pollDone: make(chan struct{}),
+	}
+	go h.pollProgress()
 	globalAppHyperMu.Lock()
 	globalAppHyper = h
 	globalAppHyperMu.Unlock()
 	return h, nil
+}
+
+// pollProgress periodically refreshes cached progress counters from the
+// underlying store and indexer. This keeps the expensive bbolt owners-bucket
+// scan off the UI thread: Progress() reads the cached atomics instead.
+// Exits when both store and index are nil (i.e. Close has been called).
+func (h *HyperGnomon) pollProgress() {
+	defer close(h.pollDone)
+	// Capture the stop channel once: Close() sets h.stop to nil while
+	// shutting down, and a select on a nil channel case would block forever,
+	// stranding this goroutine and deadlocking Close's <-pollDone wait.
+	stop := h.stop
+	if stop == nil {
+		return
+	}
+	// One immediate sample so callers see data without waiting for the
+	// first tick.
+	h.sampleProgress()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			h.sampleProgress()
+		}
+	}
+}
+
+// sampleProgress reads current values from the store and indexer into the
+// cached atomics. Must not be called concurrently with Close.
+func (h *HyperGnomon) sampleProgress() {
+	h.mu.Lock()
+	store := h.store
+	idx := h.index
+	h.mu.Unlock()
+	if store != nil {
+		h.cachedScids.Store(int64(len(store.GetAllOwnersAndSCIDs())))
+	}
+	if idx != nil {
+		h.cachedLastHeight.Store(idx.LastIndexedHeight)
+		h.cachedChain.Store(idx.ChainHeight)
+		s := idx.Status
+		h.cachedStatus.Store(&s)
+	}
 }
 
 // SCIDs returns indexed candidate SCIDs from this indexer session.
@@ -374,18 +449,12 @@ func (h *HyperGnomon) TokenLikeSCIDs() []string {
 	return out
 }
 
-// Count returns the number of indexed SCIDs.
+// Count returns the number of indexed SCIDs. Served from cached atomics.
 func (h *HyperGnomon) Count() int {
-	if h == nil || h.store == nil {
+	if h == nil {
 		return 0
 	}
-	h.mu.Lock()
-	store := h.store
-	h.mu.Unlock()
-	if store == nil {
-		return 0
-	}
-	return len(store.GetAllOwnersAndSCIDs())
+	return int(h.cachedScids.Load())
 }
 
 // Endpoint returns the daemon endpoint this indexer is polling.
@@ -422,22 +491,18 @@ func (h *HyperGnomon) StartedAt() time.Time {
 }
 
 // Progress returns SCID count and height progress. chainHeight is 0 while
-// the indexer has not yet polled GetInfo.
+// the indexer has not yet polled GetInfo. Values are served from atomics
+// refreshed in the background by pollProgress, so this call is cheap and
+// never blocks on bbolt or the RPC pool.
 func (h *HyperGnomon) Progress() (scids int, lastHeight int64, chainHeight int64, status string) {
 	if h == nil {
 		return 0, 0, 0, ""
 	}
-	h.mu.Lock()
-	idx := h.index
-	store := h.store
-	h.mu.Unlock()
-	if store != nil {
-		scids = len(store.GetAllOwnersAndSCIDs())
-	}
-	if idx != nil {
-		lastHeight = idx.LastIndexedHeight
-		chainHeight = idx.ChainHeight
-		status = idx.Status
+	scids = int(h.cachedScids.Load())
+	lastHeight = h.cachedLastHeight.Load()
+	chainHeight = h.cachedChain.Load()
+	if p := h.cachedStatus.Load(); p != nil {
+		status = *p
 	}
 	return
 }
@@ -448,14 +513,21 @@ func (h *HyperGnomon) Close() {
 		return
 	}
 	h.mu.Lock()
-	defer h.mu.Unlock()
-	if h.index != nil {
-		h.index.Close()
-		h.index = nil
+	index, store, stop, done := h.index, h.store, h.stop, h.pollDone
+	h.index, h.store, h.stop = nil, nil, nil
+	h.mu.Unlock()
+
+	if stop != nil {
+		close(stop)
 	}
-	if h.store != nil {
-		_ = h.store.Close()
-		h.store = nil
+	if index != nil {
+		index.Close()
+	}
+	if store != nil {
+		_ = store.Close()
+	}
+	if done != nil {
+		<-done
 	}
 	globalAppHyperMu.Lock()
 	if globalAppHyper == h {
@@ -540,91 +612,40 @@ func TokenMetadataFromStore(scid string) (name, ticker string, decimals uint64, 
 					}
 				case "decimals":
 					if decimals == 0 {
-						if u := storeVariableToUint64(v.Value); u != 0 {
-							decimals = u
-						} else if s := storeVariableToString(v.Value); s != "" {
+						if s := storeVariableToString(v.Value); s != "" {
 							if d, err := strconv.ParseUint(s, 10, 64); err == nil {
 								decimals = d
 							}
 						}
 					}
 				}
-			} else if keyNum, ok := v.Key.(uint64); ok && keyNum == 0 && decimals == 0 {
-				// some SCs use uint64 key 0 for decimals
-				if u := storeVariableToUint64(v.Value); u != 0 && u <= 18 {
-					decimals = u
-				}
-			}
-			if name != "" && ticker != "" && decimals != 0 {
-				break
 			}
 		}
 	}
-	if name != "" || ticker != "" || decimals != 0 {
-		return name, ticker, decimals, true
-	}
-	return "", "", 0, false
+	return name, ticker, decimals, name != "" || ticker != ""
 }
 
+// storeVariableToString converts a store variable value to a human-readable string.
 func storeVariableToString(v interface{}) string {
 	switch val := v.(type) {
 	case string:
-		s := strings.TrimSpace(val)
-		if s == "" || strings.HasPrefix(s, "NOT AVAILABLE") {
-			return ""
-		}
-		if b, err := hex.DecodeString(s); err == nil {
-			decoded := string(b)
-			printable := true
-			for _, r := range decoded {
-				if r < 32 || r > 126 {
-					if r != ' ' {
-						printable = false
-						break
-					}
-				}
-			}
-			if printable && strings.TrimSpace(decoded) != "" {
-				return strings.TrimSpace(decoded)
-			}
-		}
-		return s
-	case []byte:
-		return strings.TrimSpace(string(val))
-	default:
-		return fmt.Sprintf("%v", val)
-	}
-}
-
-func storeVariableToUint64(v interface{}) uint64 {
-	switch val := v.(type) {
-	case uint64:
 		return val
-	case int64:
-		return uint64(val)
-	case float64:
-		return uint64(val)
-	case string:
-		if d, err := strconv.ParseUint(strings.TrimSpace(val), 10, 64); err == nil {
-			return d
-		}
-		if b, err := hex.DecodeString(strings.TrimSpace(val)); err == nil && len(b) <= 8 {
-			var n uint64
-			for i := len(b) - 1; i >= 0; i-- {
-				n = n*256 + uint64(b[i])
-			}
-			return n
-		}
 	case []byte:
-		if len(val) == 8 {
-			var n uint64
-			for i := 0; i < 8; i++ {
-				n = n*256 + uint64(val[i])
-			}
-			return n
+		return string(val)
+	case uint64:
+		return strconv.FormatUint(val, 10)
+	case int64:
+		return strconv.FormatInt(val, 10)
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(val)
+	default:
+		if b, err := json.Marshal(val); err == nil {
+			return string(b)
 		}
 	}
-	return 0
+	return ""
 }
 
 // StartHyperGnomon starts an embedded bbolt-backed indexer owned by the wallet.
@@ -673,9 +694,8 @@ func (w *Wallet) CloseHyperGnomon() {
 	}
 	w.closeMu.Lock()
 	defer w.closeMu.Unlock()
-	if w.hyper == nil {
-		return
+	if w.hyper != nil {
+		w.hyper.Close()
+		w.hyper = nil
 	}
-	w.hyper.Close()
-	w.hyper = nil
 }
