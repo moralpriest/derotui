@@ -144,6 +144,12 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 	case pages.ActionDiscover:
 		return m.openDiscoverPage()
 
+	case pages.ActionLogo:
+		m.logoReturnPage = m.page
+		m.logo = pages.NewLogo()
+		m.page = PageLogo
+		return m.setWindowTitleCmd()
+
 	case pages.ActionCloseWallet:
 		m.shutdownSession(false)
 		m.page = PageWelcome

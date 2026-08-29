@@ -73,6 +73,9 @@ func (m *Model) handleMouseEvent(msg tea.MouseMsg) bool {
 	case PageQRCode:
 		m.qrcode = m.qrcode.HandleMouse(clickMsg, m.width, m.height)
 		return false
+	case PageLogo:
+		m.logo = m.logo.HandleMouse(clickMsg, m.width, m.height)
+		return false
 	case PageXSWDAuth:
 		m.xswdAuth = m.xswdAuth.HandleMouse(clickMsg, m.width, m.height)
 		return false

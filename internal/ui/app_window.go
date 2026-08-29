@@ -79,6 +79,8 @@ func (m Model) generateWindowTitle() string {
 			return base + " - Hex Key - " + walletName
 		}
 		return base + " - Hex Key"
+	case PageLogo:
+		return base + " - Logo"
 	case PageQRCode:
 		if walletName != "" {
 			return base + " - QR Code - " + walletName

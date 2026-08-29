@@ -48,6 +48,7 @@ const (
 	ActionCloseWallet
 	ActionTokens
 	ActionDiscover
+	ActionLogo
 )
 
 // Command represents a slash command
@@ -146,6 +147,7 @@ func NewWelcome() WelcomeModel {
 		{Name: "/themes", Description: "Change color theme", Action: ActionThemes},
 		{Name: "/connect", Description: "Connect to a daemon", Action: ActionConnectDaemon},
 		{Name: "/debug", Description: "Open debug console", Action: ActionDebug},
+		{Name: "/logo", Description: "Preview hex logo", Action: ActionLogo},
 		{Name: "/exit", Description: "Exit the application", Action: ActionExit},
 	}
 
@@ -393,8 +395,12 @@ func (w WelcomeModel) filterCommands(input string) []Command {
 
 // View renders the welcome screen
 func (w WelcomeModel) View() string {
-	logo := styles.Logo()
+	logo := styles.HexLogo()
 	subtitle := styles.MutedStyle.Render("Private. Secure. Decentralized.")
+	if w.showMenu || w.inRestoreMenu || w.inThemesMenu {
+		logo = ""
+		subtitle = ""
+	}
 
 	metaRows := []string{}
 	if len(w.Daemons) > 0 {
@@ -547,15 +553,14 @@ func (w WelcomeModel) View() string {
 	}
 
 	// Compose
-	elements := []string{
-		logo,
-		"",
-		subtitle,
-		"",
-		metaStrip,
-		"",
-		inputView,
+	var elements []string
+	if logo != "" {
+		elements = append(elements, logo, "")
 	}
+	if subtitle != "" {
+		elements = append(elements, subtitle, "")
+	}
+	elements = append(elements, metaStrip, "", inputView)
 
 	if menuView != "" {
 		elements = append(elements, menuView)
@@ -615,16 +620,11 @@ func (w WelcomeModel) View() string {
 	contentLines := strings.Split(content, "\n")
 	for _, line := range contentLines {
 		visibleLen := lipgloss.Width(line)
-		// Center the content within innerWidth
 		if visibleLen < innerWidth {
 			leftPad := (innerWidth - visibleLen) / 2
 			rightPad := innerWidth - visibleLen - leftPad
 			line = strings.Repeat(" ", leftPad) + line + strings.Repeat(" ", rightPad)
 		} else if visibleLen > innerWidth {
-			// Overflow guard: the borders are drawn at boxWidth, so a content
-			// line wider than innerWidth (e.g. a long daemon summary or error
-			// message) would push the side border past the frame. Truncate it
-			// to the inner width; ansi-aware truncation keeps colors intact.
 			line = lipgloss.NewStyle().Inline(true).MaxWidth(innerWidth).Render(line)
 		}
 		sideBorder := borderStyle.Render("│")
@@ -634,21 +634,14 @@ func (w WelcomeModel) View() string {
 	// Build bottom border
 	bottomBorder := cornerStyle.Render("╰") + dashStyle.Render(strings.Repeat("─", boxWidth-2)) + cornerStyle.Render("╯")
 
-	// Add top/bottom padding rows (2 rows each)
 	sideBorder := borderStyle.Render("│")
 	emptyContent := strings.Repeat(" ", boxWidth-2)
 	paddingRow := sideBorder + emptyContent + sideBorder
 
 	var allLines []string
-	allLines = append(allLines, topBorder)
-	for i := 0; i < 2; i++ { // Top padding
-		allLines = append(allLines, paddingRow)
-	}
+	allLines = append(allLines, topBorder, paddingRow)
 	allLines = append(allLines, framedLines...)
-	for i := 0; i < 2; i++ { // Bottom padding
-		allLines = append(allLines, paddingRow)
-	}
-	allLines = append(allLines, bottomBorder)
+	allLines = append(allLines, paddingRow, bottomBorder)
 
 	return strings.Join(allLines, "\n")
 }

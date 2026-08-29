@@ -99,6 +99,7 @@ const (
 	PageTokenSend      // Send token
 	PageTokenHistory   // Token history
 	PageDiscover       // TELA / NFT / NFA catalog
+	PageLogo           // Hex logo preview
 )
 
 // CLIOptions holds command line options
@@ -170,6 +171,7 @@ type Model struct {
 	tokenSend      pages.TokenSendModel
 	tokenHistory   pages.TokenHistoryModel
 	discover       pages.DiscoverModel
+	logo           pages.LogoModel
 
 	// State flags
 	isCreating           bool
@@ -195,6 +197,7 @@ type Model struct {
 
 	// Miner return page tracking (dashboard vs welcome)
 	minerReturnPage Page
+	logoReturnPage  Page
 
 	// Cached daemon status (from welcome page checks)
 	cachedDaemonHealthy bool
@@ -294,6 +297,7 @@ func NewModel() Model {
 		tokenSend:        pages.NewTokenSend(),
 		tokenHistory:     pages.NewTokenHistory(),
 		discover:         pages.NewDiscover(),
+		logo:             pages.NewLogo(),
 		daemonManager:    daemonservice.NewManager(),
 		daemonRetryAfter: initialDaemonRetryInterval,
 		hyperMu:          &sync.Mutex{},
@@ -545,6 +549,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case PageDiscover:
 				m.page = PageMain
 				if m.wallet == nil {
+					m.page = PageWelcome
+				}
+				return m, m.setWindowTitleCmd()
+			case PageLogo:
+				m.logo.ClearCancelled()
+				m.page = m.logoReturnPage
+				if m.page == PageLogo {
 					m.page = PageWelcome
 				}
 				return m, m.setWindowTitleCmd()
@@ -1911,7 +1922,7 @@ func (m *Model) updateHyperDashboard() {
 // menus so "/" never gets stolen from typed input.
 func paletteEnabled(page Page) bool {
 	switch page {
-	case PageMain, PageMiner, PageNames, PageTokens, PageTokenHistory, PageDiscover, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode:
+	case PageMain, PageMiner, PageNames, PageTokens, PageTokenHistory, PageDiscover, PageDaemonStatus, PageDaemonLogs, PageDaemonSettings, PageHistory, PageTxDetails, PageQRCode, PageLogo:
 		return true
 	default:
 		return false
@@ -1981,6 +1992,18 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		m.keyInput, cmd = m.keyInput.Update(msg)
 		cmds = append(cmds, cmd)
 		cmds = append(cmds, m.handleKeyInputAction())
+
+	case PageLogo:
+		m.logo, cmd = m.logo.Update(msg)
+		cmds = append(cmds, cmd)
+		if m.logo.Cancelled() {
+			m.logo.ClearCancelled()
+			m.page = m.logoReturnPage
+			if m.page == PageLogo {
+				m.page = PageWelcome
+			}
+			cmds = append(cmds, m.setWindowTitleCmd())
+		}
 
 	case PageQRCode:
 		m.qrcode, cmd = m.qrcode.Update(msg)
@@ -2508,6 +2531,9 @@ func (m Model) View() tea.View {
 	case PageKeyInput:
 		content = m.keyInput.View()
 
+	case PageLogo:
+		content = m.logo.View()
+
 	case PageQRCode:
 		content = m.qrcode.View()
 
@@ -2642,7 +2668,7 @@ func (m Model) View() tea.View {
 			strip := m.renderDebugStrip(width)
 			v = tea.NewView(lipgloss.JoinVertical(lipgloss.Top, mainContent, strip))
 		}
-	} else if m.page == PageQRCode || m.page == PageIntegratedAddr {
+	} else if m.page == PageQRCode || m.page == PageIntegratedAddr || m.page == PageLogo {
 		// QR code and integrated address pages are tall - place at top if terminal is too short
 		v = tea.NewView(lipgloss.Place(width, height, lipgloss.Center, lipgloss.Top, content))
 	} else if m.page == PageWelcome {

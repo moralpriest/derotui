@@ -101,6 +101,7 @@ func buildPaletteCommands(walletOpen bool) []Command {
 		Command{Name: "/connect", Description: "Connect to a daemon", Action: ActionConnectDaemon},
 		Command{Name: "/themes", Description: "Change color theme", Action: ActionThemes},
 		Command{Name: "/debug", Description: "Open debug console", Action: ActionDebug},
+		Command{Name: "/logo", Description: "Preview hex logo", Action: ActionLogo},
 		Command{Name: "/exit", Description: "Exit the application", Action: ActionExit},
 	)
 	return commands
