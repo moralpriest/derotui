@@ -282,11 +282,11 @@ func (m DiscoverModel) View() string {
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(styles.MutedStyle.Render("[1-3]/Tab tabs  [F]ilter  ↑↓  [Esc] Back"))
+	footer := "[1-3]/Tab tabs  [F]ilter  ↑↓  [Esc] Back"
 	if len(rows) > 0 {
-		b.WriteString("\n")
-		b.WriteString(styles.MutedStyle.Render(fmt.Sprintf("%d / %d", m.cursor+1, len(rows))))
+		footer += fmt.Sprintf("  %d / %d", m.cursor+1, len(rows))
 	}
+	b.WriteString(styles.MutedStyle.Render(footer))
 	content := lipgloss.JoinVertical(lipgloss.Left, discTitle("Discover"), "", b.String())
 	return styles.ThemedBoxStyle().
 		Width(styles.Width).
