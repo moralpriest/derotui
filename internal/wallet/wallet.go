@@ -553,11 +553,22 @@ func (w *Wallet) GetDisk() *walletapi.Wallet_Disk {
 // that runs it) indefinitely.
 const closeWaitTimeout = 10 * time.Second
 
+// deroheCloseWaitTimeout bounds the derohe teardown steps that contend on the
+// underlying wallet's RWMutex (Save_Wallet / Close_Encrypted_Wallet). The
+// derohe sync_loop goroutine (never stopped on close — w.Quit is never
+// signalled by walletapi) can hold that lock while it sleeps or rescans, so
+// these calls can block well past the tracked-worker wait. Without a bound,
+// a slow or wedged sync loop freezes the caller — the UI thread that runs
+// Esc/quit — for minutes.
+const deroheCloseWaitTimeout = 5 * time.Second
+
 func (w *Wallet) Close() {
 	if w.wallet == nil {
 		return
 	}
 	w.closeOnce.Do(func() {
+		log.Info("wallet", "close.begin", "Closing wallet", "file", filepath.Base(w.file))
+		started := time.Now()
 		// Hold closeMu so a concurrent trackBackground cannot Add new work
 		// after we observe the counter at zero. Workers only call Done, which
 		// does not need closeMu, so Wait never deadlocks here.
@@ -576,15 +587,29 @@ func (w *Wallet) Close() {
 			log.Warn("wallet", "close.wait_timeout", "Timed out waiting for background tasks; closing anyway", "file", filepath.Base(w.file))
 		}
 		w.closeMu.Unlock()
-		if err := w.wallet.Save_Wallet(); err != nil {
-			log.Warn("wallet", "close.save_warning", "Failed to save wallet before close", "error", err.Error(), "file", filepath.Base(w.file))
+		// Save + Close_Encrypted_Wallet contend on derohe's wallet RWMutex.
+		// Close_Encrypted_Wallet also sleeps a full second. Run them under a
+		// deadline so a wedged sync loop cannot hang the UI thread: on timeout
+		// the wallet struct is dropped and OS exit reclaims the resource.
+		teardownDone := make(chan struct{})
+		go func(disk *walletapi.Wallet_Disk) {
+			defer close(teardownDone)
+			if err := disk.Save_Wallet(); err != nil {
+				log.Warn("wallet", "close.save_warning", "Failed to save wallet before close", "error", err.Error(), "file", filepath.Base(w.file))
+			}
+			disk.Close_Encrypted_Wallet()
+		}(w.wallet)
+		select {
+		case <-teardownDone:
+		case <-time.After(deroheCloseWaitTimeout):
+			log.Warn("wallet", "close.teardown_timeout", "Timed out waiting for wallet save/close; dropping wallet handle", "file", filepath.Base(w.file))
 		}
 		w.CloseHyperGnomon()
-		w.wallet.Close_Encrypted_Wallet()
 		w.wallet = nil
 		if err := backupWalletFile(w.file); err != nil {
 			log.Warn("wallet", "close.backup_warning", "Failed to refresh wallet backup on close", "error", err.Error(), "file", filepath.Base(w.file))
 		}
+		log.Info("wallet", "close.success", "Wallet closed", "file", filepath.Base(w.file), "duration", log.FormatDuration(time.Since(started)))
 	})
 }
 
