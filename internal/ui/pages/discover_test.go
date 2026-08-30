@@ -89,3 +89,125 @@ func TestDiscoverClassifyingEmpty(t *testing.T) {
 		t.Fatalf("expected classifying message, got %q", v)
 	}
 }
+
+func TestDiscoverSortAZ(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "cc", Class: "TELA-INDEX-1", Name: "zeta.tela", DURL: "zeta.tela"},
+		{SCID: "aa", Class: "TELA-INDEX-1", Name: "alpha.tela", DURL: "alpha.tela"},
+		{SCID: "bb", Class: "TELA-INDEX-1", Name: "mid.tela", DURL: "mid.tela"},
+	}, nil, nil, false)
+	rows := m.rows()
+	if rows[0].Name != "alpha.tela" || rows[2].Name != "zeta.tela" {
+		t.Fatalf("A-Z sort default: %v", rows)
+	}
+	// Toggle order -> Z-A
+	m, _ = m.Update(tea.KeyPressMsg{Text: "o"})
+	rows = m.rows()
+	if rows[0].Name != "zeta.tela" || rows[2].Name != "alpha.tela" {
+		t.Fatalf("Z-A after [O]: %v", rows)
+	}
+	// Back to ascending
+	m, _ = m.Update(tea.KeyPressMsg{Text: "o"})
+	if rows := m.rows(); rows[0].Name != "alpha.tela" {
+		t.Fatalf("back to A-Z: %v", rows)
+	}
+}
+
+func TestDiscoverSortRecent(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "aa", Class: "TELA-INDEX-1", Name: "old.tela", InstallHeight: 100},
+		{SCID: "bb", Class: "TELA-INDEX-1", Name: "new.tela", InstallHeight: 500},
+		{SCID: "cc", Class: "TELA-INDEX-1", Name: "mid.tela", InstallHeight: 300},
+	}, nil, nil, false)
+	// Cycle sort: A-Z -> Recent (auto-switches to descending = newest first)
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
+	if discoverSortModes[m.sort] != "Recent" {
+		t.Fatalf("sort mode after [S]: %s", discoverSortModes[m.sort])
+	}
+	if !m.descending {
+		t.Fatal("Recent should default to descending (newest first)")
+	}
+	rows := m.rows()
+	if rows[0].Name != "new.tela" || rows[2].Name != "old.tela" {
+		t.Fatalf("Recent desc: %v", rows)
+	}
+	// Toggle order -> oldest first
+	m, _ = m.Update(tea.KeyPressMsg{Text: "o"})
+	rows = m.rows()
+	if rows[0].Name != "old.tela" {
+		t.Fatalf("Recent asc: %v", rows)
+	}
+}
+
+func TestDiscoverSortSCID(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "cccc", Class: "TELA-INDEX-1", Name: "b.tela"},
+		{SCID: "aaaa", Class: "TELA-INDEX-1", Name: "a.tela"},
+	}, nil, nil, false)
+	// Cycle twice: A-Z -> Recent (desc) -> SCID (asc)
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
+	if discoverSortModes[m.sort] != "SCID" {
+		t.Fatalf("sort mode: %s", discoverSortModes[m.sort])
+	}
+	if m.descending {
+		t.Fatal("SCID should default to ascending")
+	}
+	rows := m.rows()
+	if rows[0].SCID != "aaaa" || rows[1].SCID != "cccc" {
+		t.Fatalf("SCID sort: %v", rows)
+	}
+	// Cycle wraps back to A-Z
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
+	if discoverSortModes[m.sort] != "A-Z" {
+		t.Fatalf("sort wrap: %s", discoverSortModes[m.sort])
+	}
+}
+
+func TestDiscoverDetailPopup(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{{
+		SCID: "aa", Class: "TELA-INDEX-1", Name: "vault.tela", DURL: "vault.tela",
+		Desc: "Password vault", Version: "1.0.0", Tags: []string{"vault", "tool"},
+		InstallHeight: 12345,
+	}}, nil, nil, false)
+	if m.detail {
+		t.Fatal("detail should start closed")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !m.detail {
+		t.Fatal("Enter should open detail")
+	}
+	v := m.View()
+	if !containsStr(v, "vault.tela") || !containsStr(v, "Password vault") || !containsStr(v, "height 12345") || !containsStr(v, "vault, tool") {
+		t.Fatalf("detail popup missing fields: %q", v)
+	}
+	// Esc closes detail, second Esc cancels page
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.detail {
+		t.Fatal("Esc should close detail")
+	}
+	if m.Cancelled() {
+		t.Fatal("first Esc should not cancel page")
+	}
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if !m.Cancelled() {
+		t.Fatal("second Esc should cancel page")
+	}
+}
+
+func TestDiscoverFilterMatchesDesc(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "aa", Class: "TELA-INDEX-1", Name: "app1.tela", Desc: "password manager"},
+		{SCID: "bb", Class: "TELA-INDEX-1", Name: "app2.tela", Desc: "mining pool"},
+	}, nil, nil, false)
+	m.filter.SetValue("password")
+	rows := m.rows()
+	if len(rows) != 1 || rows[0].Name != "app1.tela" {
+		t.Fatalf("filter by desc: %v", rows)
+	}
+}

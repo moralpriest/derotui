@@ -21,6 +21,7 @@ import (
 	hgindexer "github.com/hypergnomon/hypergnomon/pkg/gnomes/indexer"
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
 	hgstructures "github.com/hypergnomon/hypergnomon/pkg/gnomes/structures"
+	hgstore "github.com/hypergnomon/hypergnomon/storage"
 )
 
 var globalAppHyper *HyperGnomon
@@ -237,11 +238,57 @@ func (h *HyperGnomon) ClassOf(scid string) string {
 }
 
 type CatalogEntry struct {
-	SCID  string
-	Class string
-	Name  string
-	DURL  string
+	SCID          string
+	Class         string
+	Name          string
+	DURL          string
+	Desc          string
+	Version       string
+	Tags          []string
+	InstallHeight int64
+	// TELA ratings (indexed from SC variables). AvgRating is the mean of
+	// per-rater 0-99 scores rescaled to 0-10 (Engram convention); zero when
+	// nobody has rated the entry yet.
+	AvgRating float64
+	Likes     uint64
+	Dislikes  uint64
 }
+
+// RatingDisplay returns the 0-10 average formatted for a one-cell column
+// ("unrated" when nobody has rated) plus the color tier Engram uses:
+// 9.0+ top, 7.0+ good, 5.0+ mid, else poor. More dislikes than likes forces
+// the poor tier regardless of the average.
+func (e CatalogEntry) RatingDisplay() (label string, tier RatingTier) {
+	if e.Dislikes > e.Likes {
+		return "poor", RatingTierPoor
+	}
+	if e.AvgRating <= 0 {
+		return "unrated", RatingTierNone
+	}
+	switch {
+	case e.AvgRating >= 9.0:
+		tier = RatingTierTop
+	case e.AvgRating >= 7.0:
+		tier = RatingTierGood
+	case e.AvgRating >= 5.0:
+		tier = RatingTierMid
+	default:
+		tier = RatingTierPoor
+	}
+	return fmt.Sprintf("%.1f", e.AvgRating), tier
+}
+
+// RatingTier mirrors Engram's telaAverageColor tiers so the TUI colors match
+// the desktop wallet's rating hexagons.
+type RatingTier uint8
+
+const (
+	RatingTierNone RatingTier = iota
+	RatingTierPoor
+	RatingTierMid
+	RatingTierGood
+	RatingTierTop
+)
 
 func (h *HyperGnomon) Catalog(class string) []CatalogEntry {
 	if h == nil || h.store == nil || class == "" {
@@ -270,6 +317,10 @@ func (h *HyperGnomon) Catalog(class string) []CatalogEntry {
 		if inst.Meta != nil {
 			e.Name = inst.Meta.Name
 			e.DURL = inst.Meta.DURL
+			e.Desc = inst.Meta.Desc
+			e.Version = inst.Meta.Version
+			e.Tags = inst.Meta.Tags
+			e.InstallHeight = inst.Meta.InstallHeight
 			if inst.Meta.Class != "" {
 				e.Class = inst.Meta.Class
 			}
@@ -280,6 +331,58 @@ func (h *HyperGnomon) Catalog(class string) []CatalogEntry {
 		out = append(out, e)
 	}
 	return out
+}
+
+// RatingsForSCIDs batches rating lookups off the UI thread. Catalog() is
+// called from the render loop, and each ratings lookup opens bbolt read
+// transactions — with the indexer holding write locks, doing this per row on
+// the UI thread froze the app. The UI calls this from a background command
+// and merges results via ApplyRatings.
+func (h *HyperGnomon) RatingsForSCIDs(scids []string) map[string]CatalogEntry {
+	out := make(map[string]CatalogEntry, len(scids))
+	if h == nil || h.store == nil {
+		return out
+	}
+	h.mu.Lock()
+	store := h.store
+	h.mu.Unlock()
+	if store == nil {
+		return out
+	}
+	inner := store.Inner()
+	if inner == nil {
+		return out
+	}
+	for _, scid := range scids {
+		if scid == "" {
+			continue
+		}
+		e := CatalogEntry{SCID: scid}
+		e.applyRatings(inner)
+		out[strings.ToLower(scid)] = e
+	}
+	return out
+}
+
+// applyRatings enriches an entry with TELA rating data from the local store:
+// per-rater 0-99 scores rescale to a 0-10 average (Engram convention), plus
+// the likes/dislikes counters. A missing summary leaves the entry unrated.
+// Takes the raw hgstorage store (Inner()), which exposes the ratings API the
+// civilware-compat wrapper lacks.
+func (e *CatalogEntry) applyRatings(inner *hgstore.BboltStore) {
+	if summary, err := inner.GetRatingSummary(e.SCID, 0); err == nil && summary != nil {
+		e.Likes = summary.Likes
+		e.Dislikes = summary.Dislikes
+	}
+	ratings, err := inner.GetRatingsForSCID(e.SCID, 0)
+	if err != nil || len(ratings) == 0 {
+		return
+	}
+	var sum float64
+	for _, r := range ratings {
+		sum += r.Score
+	}
+	e.AvgRating = sum / float64(len(ratings)) / 10.0
 }
 
 var catalogNameKeys = []string{"var_header_name", "nameHdr", "name", "metadata"}

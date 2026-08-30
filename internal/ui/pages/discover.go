@@ -4,6 +4,8 @@ package pages
 
 import (
 	"fmt"
+	"image/color"
+	"sort"
 	"strings"
 
 	"charm.land/bubbles/v2/key"
@@ -15,11 +17,15 @@ import (
 )
 
 const (
-	discColName = 42
+	discColName = 30
+	discColRate = 10
 	discColSCID = 19
-	discInner   = discColName + discColSCID
+	discInner   = discColName + discColRate + discColSCID
 	discVisible = 10
 )
+
+// Sort modes for catalog listings, cycled with [S].
+var discoverSortModes = []string{"A-Z", "Recent", "SCID"}
 
 var (
 	discoverUpKeys    = key.NewBinding(key.WithKeys("up", "k"))
@@ -27,6 +33,9 @@ var (
 	discoverLeftKeys  = key.NewBinding(key.WithKeys("left", "h"))
 	discoverRightKeys = key.NewBinding(key.WithKeys("right", "l"))
 	discoverFilterKey = key.NewBinding(key.WithKeys("f"))
+	discoverSortKey   = key.NewBinding(key.WithKeys("s"))
+	discoverOrderKey  = key.NewBinding(key.WithKeys("o"))
+	discoverEnterKeys = key.NewBinding(key.WithKeys("enter"))
 	discoverTab1      = key.NewBinding(key.WithKeys("1"))
 	discoverTab2      = key.NewBinding(key.WithKeys("2"))
 	discoverTab3      = key.NewBinding(key.WithKeys("3"))
@@ -43,6 +52,8 @@ var discoverTabs = []struct {
 
 type DiscoverModel struct {
 	tab         int
+	sort        int // index into discoverSortModes
+	descending  bool
 	tela        []wallet.CatalogEntry
 	nft         []wallet.CatalogEntry
 	nfa         []wallet.CatalogEntry
@@ -54,13 +65,14 @@ type DiscoverModel struct {
 	cancelled   bool
 	filtering   bool
 	filter      components.InputModel
+	detail      bool // popup with full entry info
 	width       int
 	height      int
 }
 
 func NewDiscover() DiscoverModel {
-	m := DiscoverModel{}
-	m.filter = components.NewInput("", "filter name / scid", false)
+	m := DiscoverModel{descending: false} // A-Z default: ascending
+	m.filter = components.NewInput("", "filter name / durl / scid", false)
 	m.filter.SetCharLimit(64)
 	return m
 }
@@ -108,6 +120,30 @@ func (m *DiscoverModel) SetProbing(v bool) { m.probing = v }
 
 func (m DiscoverModel) Classifying() bool { return m.classifying }
 
+func (m *DiscoverModel) cycleSort() {
+	m.sort = (m.sort + 1) % len(discoverSortModes)
+	// Sensible default direction per mode (matches Engram conventions):
+	// A-Z ascending, Recent newest-first, SCID ascending.
+	m.descending = discoverSortModes[m.sort] == "Recent"
+	m.cursor = 0
+	m.offset = 0
+}
+
+func (m *DiscoverModel) toggleOrder() {
+	m.descending = !m.descending
+	m.cursor = 0
+	m.offset = 0
+}
+
+func (m *DiscoverModel) setTab(i int) {
+	if i == m.tab {
+		return
+	}
+	m.tab = i
+	m.cursor = 0
+	m.offset = 0
+}
+
 func (m *DiscoverModel) clampCursor() {
 	if m.cursor >= len(m.rows()) && len(m.rows()) > 0 {
 		m.cursor = len(m.rows()) - 1
@@ -129,19 +165,63 @@ func (m DiscoverModel) rows() []wallet.CatalogEntry {
 	default:
 		src = m.tela
 	}
-	q := strings.ToLower(strings.TrimSpace(m.filter.Value()))
-	if q == "" {
+	if q := strings.ToLower(strings.TrimSpace(m.filter.Value())); q != "" {
+		out := make([]wallet.CatalogEntry, 0, len(src))
+		for _, e := range src {
+			if strings.Contains(strings.ToLower(e.Name), q) ||
+				strings.Contains(strings.ToLower(e.SCID), q) ||
+				strings.Contains(strings.ToLower(e.DURL), q) ||
+				strings.Contains(strings.ToLower(e.Desc), q) {
+				out = append(out, e)
+			}
+		}
+		src = out
+	}
+	if len(src) < 2 {
 		return src
 	}
-	out := make([]wallet.CatalogEntry, 0)
-	for _, e := range src {
-		if strings.Contains(strings.ToLower(e.Name), q) ||
-			strings.Contains(strings.ToLower(e.SCID), q) ||
-			strings.Contains(strings.ToLower(e.DURL), q) {
-			out = append(out, e)
+	sorted := make([]wallet.CatalogEntry, len(src))
+	copy(sorted, src)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		a, b := sorted[i], sorted[j]
+		switch discoverSortModes[m.sort] {
+		case "SCID":
+			if a.SCID != b.SCID {
+				if m.descending {
+					return a.SCID > b.SCID
+				}
+				return a.SCID < b.SCID
+			}
+		case "Recent":
+			if a.InstallHeight != b.InstallHeight {
+				if m.descending {
+					return a.InstallHeight > b.InstallHeight
+				}
+				return a.InstallHeight < b.InstallHeight
+			}
+		default: // A-Z
+			aName, bName := discSortName(a), discSortName(b)
+			if aName != bName {
+				if m.descending {
+					return aName > bName
+				}
+				return aName < bName
+			}
 		}
+		// Stable tiebreak: name, then SCID, regardless of direction.
+		if an, bn := discSortName(a), discSortName(b); an != bn {
+			return an < bn
+		}
+		return a.SCID < b.SCID
+	})
+	return sorted
+}
+
+func discSortName(e wallet.CatalogEntry) string {
+	if e.Name != "" {
+		return strings.ToLower(e.Name)
 	}
-	return out
+	return strings.ToLower(e.DURL)
 }
 
 func (m *DiscoverModel) clampOffset() {
@@ -175,6 +255,42 @@ func (m DiscoverModel) UnnamedVisible() []string {
 	return out
 }
 
+// VisibleSCIDs returns the SCIDs on the current page of the active tab —
+// the fetch set for background rating enrichment.
+func (m DiscoverModel) VisibleSCIDs() []string {
+	rows := m.rows()
+	end := m.offset + discVisible
+	if end > len(rows) {
+		end = len(rows)
+	}
+	out := make([]string, 0, end-m.offset)
+	for i := m.offset; i < end; i++ {
+		if rows[i].SCID != "" {
+			out = append(out, rows[i].SCID)
+		}
+	}
+	return out
+}
+
+// ApplyRatings merges background-fetched rating data into the tab lists.
+func (m *DiscoverModel) ApplyRatings(ratings map[string]wallet.CatalogEntry) {
+	if len(ratings) == 0 {
+		return
+	}
+	apply := func(s []wallet.CatalogEntry) {
+		for i := range s {
+			if r, ok := ratings[strings.ToLower(s[i].SCID)]; ok {
+				s[i].AvgRating = r.AvgRating
+				s[i].Likes = r.Likes
+				s[i].Dislikes = r.Dislikes
+			}
+		}
+	}
+	apply(m.tela)
+	apply(m.nft)
+	apply(m.nfa)
+}
+
 func (m *DiscoverModel) ApplyNames(names map[string]string) {
 	if len(names) == 0 {
 		return
@@ -194,6 +310,9 @@ func (m *DiscoverModel) ApplyNames(names map[string]string) {
 func (m DiscoverModel) Cancelled() bool { return m.cancelled }
 
 func (m *DiscoverModel) ClearCancelled() { m.cancelled = false }
+
+// DetailOpen reports whether the full-info popup is currently shown.
+func (m DiscoverModel) DetailOpen() bool { return m.detail }
 
 func (m DiscoverModel) Init() tea.Cmd { return nil }
 
@@ -226,7 +345,22 @@ func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, pageEscKeys):
+			if m.detail {
+				m.detail = false
+				return m, nil
+			}
 			m.cancelled = true
+			return m, nil
+		case key.Matches(msg, discoverEnterKeys):
+			if rows := m.rows(); len(rows) > 0 && m.cursor < len(rows) {
+				m.detail = true
+			}
+			return m, nil
+		case key.Matches(msg, discoverSortKey):
+			m.cycleSort()
+			return m, nil
+		case key.Matches(msg, discoverOrderKey):
+			m.toggleOrder()
 			return m, nil
 		case key.Matches(msg, discoverFilterKey):
 			m.filtering = true
@@ -256,15 +390,6 @@ func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
 	return m, nil
 }
 
-func (m *DiscoverModel) setTab(i int) {
-	if i == m.tab {
-		return
-	}
-	m.tab = i
-	m.cursor = 0
-	m.offset = 0
-}
-
 func (m DiscoverModel) View() string {
 	var b strings.Builder
 	b.WriteString(m.renderTabs())
@@ -277,12 +402,19 @@ func (m DiscoverModel) View() string {
 	if len(rows) == 0 {
 		b.WriteString(m.emptyMsg())
 		b.WriteString("\n")
+	} else if m.detail && m.cursor < len(rows) {
+		b.WriteString(m.discDetail(rows[m.cursor]))
+		b.WriteString("\n")
 	} else {
 		b.WriteString(m.renderTable(rows))
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
-	footer := "[1-3]/Tab tabs  [F]ilter  ↑↓  [Esc] Back"
+	order := "↓"
+	if !m.descending {
+		order = "↑"
+	}
+	footer := "[1-3]/Tab tabs  [F]ilter  [S]ort " + discoverSortModes[m.sort] + order + "  [O]rder  ↑↓  [Enter] Info  [Esc] Back"
 	if len(rows) > 0 {
 		footer += fmt.Sprintf("  %d / %d", m.cursor+1, len(rows))
 	}
@@ -336,6 +468,7 @@ func (m DiscoverModel) renderTable(rows []wallet.CatalogEntry) string {
 	st := lipgloss.NewStyle().Bold(true).Foreground(styles.ColorMuted)
 	header := lipgloss.JoinHorizontal(lipgloss.Left,
 		st.Width(discColName).Render("Name"),
+		st.Width(discColRate).Render("Rating"),
 		st.Width(discColSCID).Render("SCID"),
 	)
 	sep := styles.StyledSeparator(discInner)
@@ -356,6 +489,7 @@ func discRow(e wallet.CatalogEntry, selected bool) string {
 		name = "—"
 	}
 	name = clip(name, discColName)
+	rating := discRatingCell(e)
 	scid := safeSCIDLabel(e.SCID)
 	if selected {
 		st := lipgloss.NewStyle().
@@ -364,11 +498,83 @@ func discRow(e wallet.CatalogEntry, selected bool) string {
 			Bold(true)
 		return lipgloss.JoinHorizontal(lipgloss.Left,
 			st.Width(discColName).Render(name),
+			st.Width(discColRate).Render(rating),
 			st.Width(discColSCID).Render(scid),
 		)
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Left,
 		lipgloss.NewStyle().Width(discColName).Foreground(styles.ColorText).Render(name),
+		lipgloss.NewStyle().Width(discColRate).Render(rating),
 		lipgloss.NewStyle().Width(discColSCID).Foreground(styles.ColorMuted).Render(scid),
 	)
+}
+
+// discRatingCell renders the 0-10 average (or "—" when unrated) colored by
+// Engram's rating tiers: purple ≥9, green ≥7, yellow ≥5, red otherwise.
+func discRatingCell(e wallet.CatalogEntry) string {
+	label, tier := e.RatingDisplay()
+	if tier == wallet.RatingTierNone {
+		return lipgloss.NewStyle().Foreground(styles.ColorMuted).Render("—")
+	}
+	var fg color.Color
+	switch tier {
+	case wallet.RatingTierTop:
+		fg = styles.ColorPrimary
+	case wallet.RatingTierGood:
+		fg = styles.ColorSuccess
+	case wallet.RatingTierMid:
+		fg = styles.ColorWarning
+	default:
+		fg = styles.ColorError
+	}
+	return lipgloss.NewStyle().Foreground(fg).Bold(true).Render(label)
+}
+
+// ratingDetailText formats the popup's Rating row: average plus like/dislike
+// counts, e.g. "7.5 / 10  (12 likes, 3 dislikes)".
+func ratingDetailText(e wallet.CatalogEntry) string {
+	label, tier := e.RatingDisplay()
+	if tier == wallet.RatingTierNone {
+		return ""
+	}
+	return fmt.Sprintf("%s / 10  (%d likes, %d dislikes)", label, e.Likes, e.Dislikes)
+}
+
+// discDetail renders the full-info popup for the selected entry.
+func (m DiscoverModel) discDetail(e wallet.CatalogEntry) string {
+	row := func(k, v string) string {
+		if v == "" {
+			v = "—"
+		}
+		key := styles.MutedStyle.Width(16).Render(k)
+		val := styles.TextStyle.Render(v)
+		return key + val
+	}
+	lines := []string{
+		styles.TitleStyle.Render(e.Name),
+		"",
+		row("Description", e.Desc),
+		row("Rating", ratingDetailText(e)),
+		row("dURL", e.DURL),
+		row("Class", e.Class),
+		row("Version", e.Version),
+	}
+	if len(e.Tags) > 0 {
+		lines = append(lines, row("Tags", strings.Join(e.Tags, ", ")))
+	}
+	if e.InstallHeight > 0 {
+		lines = append(lines, row("Installed at", fmt.Sprintf("height %d", e.InstallHeight)))
+	}
+	lines = append(lines,
+		"",
+		row("SCID", e.SCID),
+	)
+	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(styles.ColorPrimary).
+		Padding(0, 2).
+		Width(discInner - 4).
+		Render(body)
+	return box
 }

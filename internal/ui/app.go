@@ -215,27 +215,28 @@ type Model struct {
 	lastWalletDaemon      string
 
 	// Global debug console state (visible on all pages)
-	debugEnabled      bool
-	debugConsoleOpen  bool
-	debugAutoFollow   bool
-	debugScrollStart  int
-	debugLastClickY   int
-	debugLastClickAt  time.Time
-	debugLogEntries   []derolog.LogEntry
-	regHintShown      bool
-	pendingRegTxID    string
-	pendingRegStatus  string
-	pendingRegHeight  uint64
-	pendingOutgoing   map[string]pendingOutgoingTx
-	startupFlowSet    bool
-	lastDaemonRetry   time.Time
-	daemonRetryAfter  time.Duration
-	lastTxRefreshAt   time.Time
-	tokenScanActive   bool
-	discoverHydrating bool
-	discoverTried     map[string]bool
-	discoverProbing   bool
-	discoverOwnedDone bool
+	debugEnabled           bool
+	debugConsoleOpen       bool
+	debugAutoFollow        bool
+	debugScrollStart       int
+	debugLastClickY        int
+	debugLastClickAt       time.Time
+	debugLogEntries        []derolog.LogEntry
+	regHintShown           bool
+	pendingRegTxID         string
+	pendingRegStatus       string
+	pendingRegHeight       uint64
+	pendingOutgoing        map[string]pendingOutgoingTx
+	startupFlowSet         bool
+	lastDaemonRetry        time.Time
+	daemonRetryAfter       time.Duration
+	lastTxRefreshAt        time.Time
+	tokenScanActive        bool
+	discoverHydrating      bool
+	discoverTried          map[string]bool
+	discoverProbing        bool
+	discoverOwnedDone      bool
+	discoverRatingsLoading bool
 	// Incremental token scan state (see tokenScanProgressMsg).
 	tokenScanID         int
 	tokenScanCandidates []string
@@ -547,11 +548,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.page = PageMain
 				return m, m.setWindowTitleCmd()
 			case PageDiscover:
-				m.page = PageMain
-				if m.wallet == nil {
-					m.page = PageWelcome
+				// The discover page owns Esc: first Esc closes the dApp info
+				// popup, only a second Esc (no popup open) leaves the page.
+				// Handle it in the page model so the popup can never trap the
+				// user outside the page with the detail still open.
+				var discCmd tea.Cmd
+				m.discover, discCmd = m.discover.Update(msg)
+				cmds = append(cmds, discCmd)
+				if m.discover.Cancelled() {
+					m.discover.ClearCancelled()
+					m.page = PageMain
+					if m.wallet == nil {
+						m.page = PageWelcome
+					}
+					cmds = append(cmds, m.setWindowTitleCmd())
 				}
-				return m, m.setWindowTitleCmd()
+				return m, tea.Batch(cmds...)
 			case PageLogo:
 				m.logo.ClearCancelled()
 				m.page = m.logoReturnPage
@@ -684,7 +696,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateHyperDashboard()
 		if m.page == PageDiscover {
 			m.loadDiscoverCatalog()
-			cmds = append(cmds, m.maybeProbeDiscover(), m.maybeHydrateDiscover())
+			cmds = append(cmds, m.maybeProbeDiscover(), m.maybeHydrateDiscover(), m.maybeFetchDiscoverRatings())
 		}
 		if m.hyperGnomon == nil || !m.hyperGnomon.IsRunning() {
 			if m.cachedDaemonHealthy && m.cachedDaemonAddress != "" {
@@ -1264,6 +1276,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+	case discoverRatingsMsg:
+		m.discoverRatingsLoading = false
+		m.discover.ApplyRatings(msg.ratings)
+		if cmd := m.maybeFetchDiscoverRatings(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+
 	case discoverOwnedMsg:
 		m.discoverProbing = false
 		m.discoverOwnedDone = true
@@ -1801,6 +1820,10 @@ type discoverNamesMsg struct {
 	names map[string]string
 }
 
+type discoverRatingsMsg struct {
+	ratings map[string]wallet.CatalogEntry
+}
+
 func (m *Model) maybeHydrateDiscover() tea.Cmd {
 	if m.page != PageDiscover || m.discoverHydrating {
 		return nil
@@ -1843,6 +1866,31 @@ func (m *Model) maybeHydrateDiscover() tea.Cmd {
 			}
 		}
 		return discoverNamesMsg{names: names}
+	}
+}
+
+// maybeFetchDiscoverRatings returns a background command that enriches the
+// visible TELA rows with TELA rating data. Ratings live in bbolt, and the
+// indexer can hold its write lock for long stretches — so this MUST run off
+// the UI thread (a synchronous per-row fetch in the tick path froze the app).
+func (m *Model) maybeFetchDiscoverRatings() tea.Cmd {
+	if m.page != PageDiscover || m.discoverRatingsLoading {
+		return nil
+	}
+	m.hyperMu.Lock()
+	h := m.hyperGnomon
+	m.hyperMu.Unlock()
+	if h == nil {
+		return nil
+	}
+	scids := m.discover.VisibleSCIDs()
+	if len(scids) == 0 {
+		return nil
+	}
+	m.discoverRatingsLoading = true
+	return func() tea.Msg {
+		ratings := h.RatingsForSCIDs(scids)
+		return discoverRatingsMsg{ratings: ratings}
 	}
 }
 
@@ -2421,7 +2469,7 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 	case PageDiscover:
 		m.discover, cmd = m.discover.Update(msg)
 		cmds = append(cmds, cmd)
-		cmds = append(cmds, m.maybeHydrateDiscover())
+		cmds = append(cmds, m.maybeHydrateDiscover(), m.maybeFetchDiscoverRatings())
 		if m.discover.Cancelled() {
 			m.discover.ClearCancelled()
 			m.page = PageMain
