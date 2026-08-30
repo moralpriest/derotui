@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/deroproject/derohe/rpc"
+	derolog "github.com/deroproject/dero-wallet-cli/internal/log"
 	hgindexer "github.com/hypergnomon/hypergnomon/pkg/gnomes/indexer"
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
 	hgstructures "github.com/hypergnomon/hypergnomon/pkg/gnomes/structures"
@@ -610,11 +611,34 @@ func (h *HyperGnomon) Progress() (scids int, lastHeight int64, chainHeight int64
 	return
 }
 
-// Close stops the indexer and releases its bbolt lock.
+// hyperCloseWaitTimeout bounds Close's wait for the poll goroutine and the
+// indexer/store teardown. The indexer can be stuck inside a long bbolt write
+// transaction or a no-timeout RPC; blocking shutdown (and the UI thread that
+// runs it — Ctrl+C) on that froze the app on exit.
+const hyperCloseWaitTimeout = 5 * time.Second
+
+// Close stops the indexer and releases its bbolt lock. Never blocks longer
+// than hyperCloseWaitTimeout: on timeout the resources are leaked to the OS
+// (process exit reclaims them) instead of hanging the caller.
 func (h *HyperGnomon) Close() {
 	if h == nil {
 		return
 	}
+	done := make(chan struct{})
+	go func() {
+		h.closeInner()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(hyperCloseWaitTimeout):
+		derolog.Warn("hypergnomon", "close.timeout", "HyperGnomon close timed out; leaking resources to exit", "timeout", hyperCloseWaitTimeout.String())
+	}
+}
+
+// closeInner performs the actual teardown. Called from Close's goroutine;
+// idempotent via the nil-ing of h.index/h.store/h.stop under h.mu.
+func (h *HyperGnomon) closeInner() {
 	h.mu.Lock()
 	index, store, stop, done := h.index, h.store, h.stop, h.pollDone
 	h.index, h.store, h.stop = nil, nil, nil

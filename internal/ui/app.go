@@ -237,6 +237,7 @@ type Model struct {
 	discoverProbing        bool
 	discoverOwnedDone      bool
 	discoverRatingsLoading bool
+	discoverCatalogLoading bool
 	// Incremental token scan state (see tokenScanProgressMsg).
 	tokenScanID         int
 	tokenScanCandidates []string
@@ -695,8 +696,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// without requiring a wallet or an open token menu.
 		m.updateHyperDashboard()
 		if m.page == PageDiscover {
-			m.loadDiscoverCatalog()
-			cmds = append(cmds, m.maybeProbeDiscover(), m.maybeHydrateDiscover(), m.maybeFetchDiscoverRatings())
+			cmds = append(cmds, m.maybeLoadDiscoverCatalog(), m.maybeProbeDiscover(), m.maybeHydrateDiscover(), m.maybeFetchDiscoverRatings())
 		}
 		if m.hyperGnomon == nil || !m.hyperGnomon.IsRunning() {
 			if m.cachedDaemonHealthy && m.cachedDaemonAddress != "" {
@@ -1276,6 +1276,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+	case discoverCatalogMsg:
+		m.handleDiscoverCatalog(msg)
+
 	case discoverRatingsMsg:
 		m.discoverRatingsLoading = false
 		m.discover.ApplyRatings(msg.ratings)
@@ -1632,13 +1635,30 @@ func (m *Model) ensureHyperGnomonCmd(endpoint, network string) tea.Cmd {
 
 	return func() tea.Msg {
 		start := time.Now()
-		h, err := wallet.NewHyperGnomon(endpoint, normNet, "", 8)
-		if err != nil {
-			derolog.Warn("hypergnomon", "start.failed", "failed to start HyperGnomon", "error", err.Error(), "endpoint", endpoint, "network", normNet)
-			return hyperStartedMsg{err: err.Error(), network: normNet}
+		// Bound the whole startup: NewHyperGnomon opens bbolt with
+		// Timeout: 0 (wait indefinitely for the file lock), so a second app
+		// instance — or a stale test process — holding
+		// ~/.derotui/hypergnomon/<net>/HYPERGNOMON.db would block forever.
+		// A hung startup must surface as an error msg, not a frozen cmd.
+		const startupTimeout = 15 * time.Second
+		resultCh := make(chan hyperStartedMsg, 1)
+		go func() {
+			h, err := wallet.NewHyperGnomon(endpoint, normNet, "", 8)
+			if err != nil {
+				derolog.Warn("hypergnomon", "start.failed", "failed to start HyperGnomon", "error", err.Error(), "endpoint", endpoint, "network", normNet)
+				resultCh <- hyperStartedMsg{err: err.Error(), network: normNet}
+				return
+			}
+			derolog.Info("hypergnomon", "scan.start", "HyperGnomon started", "endpoint", endpoint, "network", normNet, "startup_ms", fmt.Sprintf("%d", time.Since(start).Milliseconds()))
+			resultCh <- hyperStartedMsg{hyper: h, network: normNet}
+		}()
+		select {
+		case msg := <-resultCh:
+			return msg
+		case <-time.After(startupTimeout):
+			derolog.Warn("hypergnomon", "start.timeout", "HyperGnomon startup timed out (bbolt lock held or daemon unreachable)", "endpoint", endpoint, "network", normNet)
+			return hyperStartedMsg{err: fmt.Sprintf("HyperGnomon startup timed out after %s (bbolt lock held or daemon unreachable)", startupTimeout), network: normNet}
 		}
-		derolog.Info("hypergnomon", "scan.start", "HyperGnomon started", "endpoint", endpoint, "network", normNet, "startup_ms", fmt.Sprintf("%d", time.Since(start).Milliseconds()))
-		return hyperStartedMsg{hyper: h, network: normNet}
 	}
 }
 
@@ -1956,21 +1976,40 @@ func discoverAssetOwned(w *wallet.Wallet, endpoint, scid, addr string) bool {
 	return owner != "" && strings.EqualFold(owner, addr)
 }
 
-func (m *Model) loadDiscoverCatalog() {
-	if m.hyperMu == nil {
-		m.hyperMu = &sync.Mutex{}
+// discoverCatalogMsg carries the result of the background catalog load.
+type discoverCatalogMsg struct {
+	tela        []wallet.CatalogEntry
+	classifying bool
+}
+
+// maybeLoadDiscoverCatalog returns a background command that loads the TELA
+// catalog off the UI thread. Catalog()/SCIDsByClass() each open bbolt read
+// transactions — with the indexer holding write locks for long stretches
+// (fastsync batches), a synchronous call in the tick path froze the whole UI
+// and made Ctrl+C unresponsive. Results land via discoverCatalogMsg.
+func (m *Model) maybeLoadDiscoverCatalog() tea.Cmd {
+	if m.page != PageDiscover || m.discoverCatalogLoading {
+		return nil
 	}
 	m.hyperMu.Lock()
 	h := m.hyperGnomon
 	m.hyperMu.Unlock()
-	var tela []wallet.CatalogEntry
-	classifying := false
-	if h != nil {
-		tela = h.Catalog("TELA-INDEX-1")
-		classCount := len(h.SCIDsByClass("TELA-INDEX-1")) + len(h.SCIDsByClass("G45-NFT")) + len(h.SCIDsByClass("NFA"))
-		classifying = h.Count() > 0 && classCount == 0
+	if h == nil {
+		return nil
 	}
-	m.discover.SetTela(tela, classifying, m.wallet == nil)
+	m.discoverCatalogLoading = true
+	return func() tea.Msg {
+		tela := h.Catalog("TELA-INDEX-1")
+		classCount := len(h.SCIDsByClass("TELA-INDEX-1")) + len(h.SCIDsByClass("G45-NFT")) + len(h.SCIDsByClass("NFA"))
+		classifying := h.Count() > 0 && classCount == 0
+		return discoverCatalogMsg{tela: tela, classifying: classifying}
+	}
+}
+
+// handleDiscoverCatalog merges the background catalog load into the page.
+func (m *Model) handleDiscoverCatalog(msg discoverCatalogMsg) {
+	m.discoverCatalogLoading = false
+	m.discover.SetTela(msg.tela, msg.classifying, m.wallet == nil)
 }
 
 func (m *Model) hyperTokenLikeSCIDs() []string {

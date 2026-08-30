@@ -663,9 +663,10 @@ func (m *Model) openDiscoverPage() tea.Cmd {
 	m.discoverOwnedDone = false
 	m.discoverProbing = false
 	m.discover.SetOwned(nil, nil)
-	m.loadDiscoverCatalog()
 	m.page = PageDiscover
-	return tea.Batch(m.setWindowTitleCmd(), m.maybeProbeDiscover(), m.maybeHydrateDiscover())
+	// Catalog loads in the background (bbolt scans block on indexer write
+	// locks — never run them synchronously on the UI thread).
+	return tea.Batch(m.setWindowTitleCmd(), m.maybeLoadDiscoverCatalog(), m.maybeProbeDiscover(), m.maybeHydrateDiscover())
 }
 
 func (m *Model) openTokensPage() tea.Cmd {
