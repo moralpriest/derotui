@@ -147,7 +147,8 @@ func TestDiscoverSortSCID(t *testing.T) {
 		{SCID: "cccc", Class: "TELA-INDEX-1", Name: "b.tela"},
 		{SCID: "aaaa", Class: "TELA-INDEX-1", Name: "a.tela"},
 	}, nil, nil, false)
-	// Cycle twice: A-Z -> Recent (desc) -> SCID (asc)
+	// Cycle thrice: A-Z -> Recent (desc) -> Rating (desc) -> SCID (asc)
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
 	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
 	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
 	if discoverSortModes[m.sort] != "SCID" {
@@ -164,6 +165,35 @@ func TestDiscoverSortSCID(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
 	if discoverSortModes[m.sort] != "A-Z" {
 		t.Fatalf("sort wrap: %s", discoverSortModes[m.sort])
+	}
+}
+
+func TestDiscoverSortRating(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "aa", Class: "TELA-INDEX-1", Name: "low.tela", AvgRating: 3.1},
+		{SCID: "bb", Class: "TELA-INDEX-1", Name: "top.tela", AvgRating: 9.2},
+		{SCID: "cc", Class: "TELA-INDEX-1", Name: "mid.tela", AvgRating: 7.5},
+		{SCID: "dd", Class: "TELA-INDEX-1", Name: "unrated.tela"},
+	}, nil, nil, false)
+	// Cycle sort twice: A-Z -> Recent -> Rating (auto-switches to descending = best first)
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
+	m, _ = m.Update(tea.KeyPressMsg{Text: "s"})
+	if discoverSortModes[m.sort] != "Rating" {
+		t.Fatalf("sort mode: %s", discoverSortModes[m.sort])
+	}
+	if !m.descending {
+		t.Fatal("Rating should default to descending (best first)")
+	}
+	rows := m.rows()
+	if rows[0].Name != "top.tela" || rows[2].Name != "low.tela" || rows[3].Name != "unrated.tela" {
+		t.Fatalf("Rating desc: %v", rows)
+	}
+	// Toggle order -> worst first
+	m, _ = m.Update(tea.KeyPressMsg{Text: "o"})
+	rows = m.rows()
+	if rows[0].Name != "unrated.tela" || rows[3].Name != "top.tela" {
+		t.Fatalf("Rating asc: %v", rows)
 	}
 }
 

@@ -24,7 +24,7 @@ const (
 )
 
 // Sort modes for catalog listings, cycled with [S].
-var discoverSortModes = []string{"A-Z", "Recent", "SCID"}
+var discoverSortModes = []string{"A-Z", "Recent", "Rating", "SCID"}
 
 var (
 	discoverUpKeys    = key.NewBinding(key.WithKeys("up", "k"))
@@ -122,8 +122,8 @@ func (m DiscoverModel) Classifying() bool { return m.classifying }
 func (m *DiscoverModel) cycleSort() {
 	m.sort = (m.sort + 1) % len(discoverSortModes)
 	// Sensible default direction per mode (matches Engram conventions):
-	// A-Z ascending, Recent newest-first, SCID ascending.
-	m.descending = discoverSortModes[m.sort] == "Recent"
+	// A-Z ascending, Recent newest-first, Rating best-first, SCID ascending.
+	m.descending = discoverSortModes[m.sort] == "Recent" || discoverSortModes[m.sort] == "Rating"
 	m.cursor = 0
 	m.offset = 0
 }
@@ -197,6 +197,13 @@ func (m DiscoverModel) rows() []wallet.CatalogEntry {
 					return a.InstallHeight > b.InstallHeight
 				}
 				return a.InstallHeight < b.InstallHeight
+			}
+		case "Rating":
+			if a.AvgRating != b.AvgRating {
+				if m.descending {
+					return a.AvgRating > b.AvgRating
+				}
+				return a.AvgRating < b.AvgRating
 			}
 		default: // A-Z
 			aName, bName := discSortName(a), discSortName(b)
