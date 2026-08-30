@@ -17,8 +17,8 @@ import (
 )
 
 const (
-	discColName = 30
-	discColRate = 10
+	discColName = 56
+	discColRate = 12
 	discInner   = discColName + discColRate
 	discVisible = 10
 )
