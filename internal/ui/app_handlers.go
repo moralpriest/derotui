@@ -48,8 +48,9 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 	switch action {
 	case pages.ActionOpen:
 		// Close any currently open wallet before opening another.
+		var closeCmd tea.Cmd
 		if m.wallet != nil {
-			m.shutdownSession(false)
+			closeCmd = m.shutdownSession(false)
 			m.welcome = pages.NewWelcome()
 			m.welcome.Version = Version
 		}
@@ -66,11 +67,12 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		applyFilePickerTheme(&fp)
 		m.filePicker = fp
 		m.page = PageFilePicker
-		return tea.Batch(m.filePicker.Init(), m.setWindowTitleCmd())
+		return tea.Batch(closeCmd, m.filePicker.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionCreate:
+		var closeCmd tea.Cmd
 		if m.wallet != nil {
-			m.shutdownSession(false)
+			closeCmd = m.shutdownSession(false)
 			m.welcome = pages.NewWelcome()
 			m.welcome.Version = Version
 		}
@@ -80,11 +82,12 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		m.isCreating = true
 		m.isRestoringFromSeed = false
 		m.isRestoringFromKey = false
-		return tea.Batch(m.password.Init(), m.setWindowTitleCmd())
+		return tea.Batch(closeCmd, m.password.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionRestoreSeed:
+		var closeCmd tea.Cmd
 		if m.wallet != nil {
-			m.shutdownSession(false)
+			closeCmd = m.shutdownSession(false)
 			m.welcome = pages.NewWelcome()
 			m.welcome.Version = Version
 		}
@@ -93,11 +96,12 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		m.isCreating = false
 		m.isRestoringFromSeed = true
 		m.isRestoringFromKey = false
-		return tea.Batch(m.seed.Init(), m.setWindowTitleCmd())
+		return tea.Batch(closeCmd, m.seed.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionRestoreKey:
+		var closeCmd tea.Cmd
 		if m.wallet != nil {
-			m.shutdownSession(false)
+			closeCmd = m.shutdownSession(false)
 			m.welcome = pages.NewWelcome()
 			m.welcome.Version = Version
 		}
@@ -106,7 +110,7 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		m.isCreating = false
 		m.isRestoringFromSeed = false
 		m.isRestoringFromKey = true
-		return tea.Batch(m.keyInput.Init(), m.setWindowTitleCmd())
+		return tea.Batch(closeCmd, m.keyInput.Init(), m.setWindowTitleCmd())
 
 	case pages.ActionConnectDaemon:
 		// Use current daemon status (what welcome shows) to pre-populate the connect form
@@ -151,11 +155,11 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		return m.setWindowTitleCmd()
 
 	case pages.ActionCloseWallet:
-		m.shutdownSession(false)
+		closeCmd := m.shutdownSession(false)
 		m.page = PageWelcome
 		m.welcome = pages.NewWelcome()
 		m.welcome.Version = Version
-		return tea.Batch(m.checkDaemonStatus(), m.setWindowTitleCmd())
+		return tea.Batch(closeCmd, m.checkDaemonStatus(), m.setWindowTitleCmd())
 
 	case pages.ActionSwitchNetwork:
 		network := "Mainnet"
@@ -201,8 +205,7 @@ func (m *Model) handleCommand(action pages.WelcomeAction, selectedTheme func() s
 		return m.toggleDebugLoggingCmd(true)
 
 	case pages.ActionExit:
-		m.closeHyperGnomon()
-		return tea.Quit
+		return m.shutdownSession(true)
 
 	case pages.ActionPreviewTheme:
 		theme := selectedTheme()

@@ -3,8 +3,13 @@
 package ui
 
 import (
+	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/pages"
@@ -126,4 +131,116 @@ func TestXSWDPermTimeoutDismissesDialog(t *testing.T) {
 	default:
 		t.Fatal("expected the perm response channel to receive a denial")
 	}
+}
+
+func TestEscFromDashboardReturnsToWelcomeWithoutBlocking(t *testing.T) {
+	m := NewModel()
+	m.page = PageMain
+	m.wallet = &wallet.Wallet{}
+
+	start := time.Now()
+	result, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	elapsed := time.Since(start)
+	got := result.(Model)
+
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("Update blocked for %s; Close must not run on the UI thread", elapsed)
+	}
+	if got.page != PageWelcome {
+		t.Fatalf("expected PageWelcome, got %v", got.page)
+	}
+	if got.wallet != nil {
+		t.Fatal("wallet should be unhooked before Close runs")
+	}
+	if cmd == nil {
+		t.Fatal("expected a close cmd")
+	}
+}
+
+func TestEscClosesTestAIWalletWithoutBlockingUpdate(t *testing.T) {
+	src := findTestAIWallet(t)
+	dst := copyWalletForTest(t, src)
+
+	w, err := wallet.Open(dst, "t", false, false)
+	if err != nil {
+		w, err = wallet.Open(dst, "t", true, false)
+	}
+	if err != nil {
+		w, err = wallet.Open(dst, "t", false, true)
+	}
+	if err != nil {
+		t.Fatalf("open testAI.db with password t: %v", err)
+	}
+
+	m := NewModel()
+	m.page = PageMain
+	m.wallet = w
+
+	start := time.Now()
+	result, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	elapsed := time.Since(start)
+	got := result.(Model)
+
+	if elapsed > 200*time.Millisecond {
+		t.Fatalf("Update blocked for %s closing testAI.db; Close must not run on the UI thread", elapsed)
+	}
+	if got.page != PageWelcome {
+		t.Fatalf("expected PageWelcome, got %v", got.page)
+	}
+	if got.wallet != nil {
+		t.Fatal("wallet should be unhooked before Close runs")
+	}
+	if cmd == nil {
+		t.Fatal("expected a close cmd")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		_ = cmd()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("close cmd hung")
+	}
+}
+
+func findTestAIWallet(t *testing.T) string {
+	t.Helper()
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	root := filepath.Join(filepath.Dir(thisFile), "..", "..")
+	for _, name := range []string{"testAI.db", "testai.db"} {
+		p := filepath.Join(root, name)
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	t.Skip("testAI.db not present")
+	return ""
+}
+
+func copyWalletForTest(t *testing.T, src string) string {
+	t.Helper()
+	dst := filepath.Join(t.TempDir(), "testAI.db")
+	in, err := os.Open(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = io.Copy(out, in); err != nil {
+		out.Close()
+		t.Fatal(err)
+	}
+	if err = out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dst
 }

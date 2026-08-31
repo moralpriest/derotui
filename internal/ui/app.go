@@ -493,8 +493,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		keyStr := msg.String()
 		// Global quit - Ctrl+C works from any page
 		if key.Matches(msg, key.NewBinding(key.WithKeys("ctrl+c"))) {
-			m.shutdownSession(true)
-			return m, tea.Quit
+			return m, m.shutdownSession(true)
 		}
 
 		// Global command palette: when open, it consumes all keys.
@@ -517,20 +516,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Q to quit only from main page (dashboard)
 		if key.Matches(msg, key.NewBinding(key.WithKeys("q"))) && m.page == PageMain {
-			m.shutdownSession(true)
-			return m, tea.Quit
+			return m, m.shutdownSession(true)
 		}
 
 		// Esc handling for different pages
 		if key.Matches(msg, key.NewBinding(key.WithKeys("esc"))) {
 			switch m.page {
 			case PageMain:
-				// Respond on any pending XSWD channels before closing wallet
-				m.shutdownSession(false)
+				closeCmd := m.shutdownSession(false)
 				m.page = PageWelcome
 				m.welcome = pages.NewWelcome()
 				m.welcome.Version = Version
-				return m, tea.Batch(m.checkDaemonStatus(), m.setWindowTitleCmd())
+				return m, tea.Batch(closeCmd, m.checkDaemonStatus(), m.setWindowTitleCmd())
 			case PageSend:
 				// Go back to dashboard
 				m.send.Reset()
@@ -1559,46 +1556,70 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return result, cmd
 }
 
-// shutdownSession cleans up XSWD state and closes the wallet. When quitting is
-// true the app is terminating; when false the wallet is just being closed to
-// return to the welcome page.
-func (m *Model) shutdownSession(quitting bool) {
-	// Respond on any pending XSWD channels before closing wallet
+// shutdownSession unhooks session state immediately so Update can return.
+// Wallet Close, XSWD Stop, and HyperGnomon Close run in the returned cmd —
+// they block on derohe/bbolt and used to freeze the TUI when called inline.
+func (m *Model) shutdownSession(quitting bool) tea.Cmd {
 	if m.xswdAuthCh != nil {
-		m.xswdAuthCh <- false
+		select {
+		case m.xswdAuthCh <- false:
+		default:
+		}
 		m.xswdAuthCh = nil
 	}
 	if m.xswdPermCh != nil {
-		m.xswdPermCh <- wallet.XSWDPermDeny
+		select {
+		case m.xswdPermCh <- wallet.XSWDPermDeny:
+		default:
+		}
 		m.xswdPermCh = nil
 	}
-	// Stop XSWD server before closing wallet
-	if m.xswdBridge != nil {
-		m.xswdBridge.Stop()
-		m.xswdBridge = nil
+
+	bridge := m.xswdBridge
+	m.xswdBridge = nil
+	if bridge != nil {
 		m.dashboard.SetXSWDRunning(false)
 	}
-	// Close wallet and go back to welcome
-	if m.wallet != nil {
-		if quitting {
-			m.wallet.Close()
-		} else {
-			m.lastWalletDaemon = m.wallet.GetDaemonAddress()
-			m.wallet.Close()
-			m.wallet = nil
-			// Clear app-level cached state (keep global daemon endpoint for switch detection)
-			m.cachedDaemonHealthy = false
-			m.cachedDaemonAddress = ""
-			m.cachedDaemonNetwork = ""
-			m.Opts.DaemonAddress = m.cliDaemonAddress
-			m.regHintShown = false
-			m.clearPendingRegistration()
-		}
+
+	w := m.wallet
+	m.wallet = nil
+	if w != nil && !quitting {
+		m.lastWalletDaemon = w.GetDaemonAddress()
+		m.cachedDaemonHealthy = false
+		m.cachedDaemonAddress = ""
+		m.cachedDaemonNetwork = ""
+		m.Opts.DaemonAddress = m.cliDaemonAddress
+		m.regHintShown = false
+		m.clearPendingRegistration()
 	}
+
+	var hyper *wallet.HyperGnomon
 	if quitting {
 		m.quitting = true
-		m.closeHyperGnomon()
-		derolog.Close()
+		if m.hyperMu == nil {
+			m.hyperMu = &sync.Mutex{}
+		}
+		m.hyperMu.Lock()
+		hyper = m.hyperGnomon
+		m.hyperGnomon = nil
+		m.hyperMu.Unlock()
+	}
+
+	return func() tea.Msg {
+		if bridge != nil {
+			bridge.Stop()
+		}
+		if w != nil {
+			w.Close()
+		}
+		if quitting {
+			if hyper != nil {
+				hyper.Close()
+			}
+			derolog.Close()
+			return tea.Quit()
+		}
+		return nil
 	}
 }
 
