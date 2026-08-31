@@ -17,8 +17,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/deroproject/derohe/rpc"
 	derolog "github.com/deroproject/dero-wallet-cli/internal/log"
+	"github.com/deroproject/derohe/rpc"
 	hgindexer "github.com/hypergnomon/hypergnomon/pkg/gnomes/indexer"
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
 	hgstructures "github.com/hypergnomon/hypergnomon/pkg/gnomes/structures"
@@ -314,17 +314,21 @@ func (h *HyperGnomon) Catalog(class string) []CatalogEntry {
 		if inst.SCID == "" {
 			continue
 		}
-		e := CatalogEntry{SCID: inst.SCID, Class: class}
+		e := CatalogEntry{SCID: inst.SCID, Class: class, InstallHeight: inst.InstallHeight}
 		if inst.Meta != nil {
 			e.Name = inst.Meta.Name
 			e.DURL = inst.Meta.DURL
 			e.Desc = inst.Meta.Desc
 			e.Version = inst.Meta.Version
 			e.Tags = inst.Meta.Tags
-			e.InstallHeight = inst.Meta.InstallHeight
 			if inst.Meta.Class != "" {
 				e.Class = inst.Meta.Class
 			}
+		}
+		// FastSync stamps ClassMeta.InstallHeight with chain tip; sccode
+		// keeps the real registry deploy height.
+		if code, err := inner.GetSCCode(inst.SCID); err == nil && code != nil && code.InstallHeight > 0 {
+			e.InstallHeight = code.InstallHeight
 		}
 		if e.Name == "" {
 			e.Name = e.DURL

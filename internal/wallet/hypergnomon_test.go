@@ -9,6 +9,7 @@ import (
 
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
 	hgnative "github.com/hypergnomon/hypergnomon/storage"
+	"github.com/hypergnomon/hypergnomon/structures"
 )
 
 // TestHyperGnomonSCIDsForAddress verifies that SCIDsForAddress reads the
@@ -230,5 +231,32 @@ func TestHyperGnomonCloseStopsPoller(t *testing.T) {
 	case <-empty.pollDone:
 	case <-time.After(5 * time.Second):
 		t.Fatal("poller did not exit for a closed instance")
+	}
+}
+
+func TestCatalogPrefersSccodeInstallHeight(t *testing.T) {
+	store, err := hgstorage.NewBBoltDB(t.TempDir(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	scid := strings.Repeat("a", 64)
+	batch := hgnative.NewWriteBatch()
+	batch.AddClass(scid, &structures.ClassMeta{
+		Class:         "TELA-INDEX-1",
+		Name:          "vault.tela",
+		DURL:          "vault.tela",
+		InstallHeight: 99999,
+	})
+	batch.AddSCCode(scid, 100, "FUNCTION Initialize() UINT64\nRETURN 0\nEND FUNCTION")
+	batch.LastHeight = 99999
+	if err := store.Inner().FlushBatch(batch); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&HyperGnomon{store: store}).Catalog("TELA-INDEX-1")
+	if len(got) != 1 || got[0].InstallHeight != 100 {
+		t.Fatalf("InstallHeight: %+v", got)
 	}
 }
