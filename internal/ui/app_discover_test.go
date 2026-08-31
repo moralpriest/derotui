@@ -22,11 +22,11 @@ func TestDiscoverEscClosesDetailBeforeLeavingPage(t *testing.T) {
 	)
 	m.page = PageDiscover
 
-	// Enter opens the dApp info popup.
-	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	// I opens the dApp info popup.
+	next, _ := m.Update(tea.KeyPressMsg{Text: "i"})
 	m = next.(Model)
 	if !m.discover.DetailOpen() {
-		t.Fatal("Enter should open the detail popup")
+		t.Fatal("I should open the detail popup")
 	}
 
 	// First Esc closes the popup and stays on Discover.

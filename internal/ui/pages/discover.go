@@ -5,12 +5,15 @@ package pages
 import (
 	"fmt"
 	"image/color"
+	"math"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/atotto/clipboard"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/components"
 	"github.com/deroproject/dero-wallet-cli/internal/ui/styles"
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
@@ -35,6 +38,8 @@ var (
 	discoverSortKey   = key.NewBinding(key.WithKeys("s"))
 	discoverOrderKey  = key.NewBinding(key.WithKeys("o"))
 	discoverEnterKeys = key.NewBinding(key.WithKeys("enter"))
+	discoverInfoKeys  = key.NewBinding(key.WithKeys("i", "I"))
+	discoverCopySCID  = key.NewBinding(key.WithKeys("c", "C"))
 	discoverTab1      = key.NewBinding(key.WithKeys("1"))
 	discoverTab2      = key.NewBinding(key.WithKeys("2"))
 	discoverTab3      = key.NewBinding(key.WithKeys("3"))
@@ -50,23 +55,29 @@ var discoverTabs = []struct {
 }
 
 type DiscoverModel struct {
-	tab         int
-	sort        int // index into discoverSortModes
-	descending  bool
-	tela        []wallet.CatalogEntry
-	nft         []wallet.CatalogEntry
-	nfa         []wallet.CatalogEntry
-	cursor      int
-	offset      int
-	classifying bool
-	needWallet  bool
-	probing     bool
-	cancelled   bool
-	filtering   bool
-	filter      components.InputModel
-	detail      bool // popup with full entry info
-	width       int
-	height      int
+	tab          int
+	sort         int // index into discoverSortModes
+	descending   bool
+	tela         []wallet.CatalogEntry
+	nft          []wallet.CatalogEntry
+	nfa          []wallet.CatalogEntry
+	cursor       int
+	offset       int
+	classifying  bool
+	needWallet   bool
+	probing      bool
+	cancelled    bool
+	filtering    bool
+	filter       components.InputModel
+	detail       bool
+	flash        string
+	flashOK      bool
+	launching    bool
+	wantLaunch   bool
+	launchSCID   string
+	cancelLaunch *atomic.Bool
+	width        int
+	height       int
 }
 
 func NewDiscover() DiscoverModel {
@@ -320,6 +331,60 @@ func (m *DiscoverModel) ClearCancelled() { m.cancelled = false }
 // DetailOpen reports whether the full-info popup is currently shown.
 func (m DiscoverModel) DetailOpen() bool { return m.detail }
 
+func (m DiscoverModel) WantLaunch() (scid string, cancel *atomic.Bool, ok bool) {
+	if !m.wantLaunch {
+		return "", nil, false
+	}
+	return m.launchSCID, m.cancelLaunch, true
+}
+
+func (m *DiscoverModel) ResetActions() { m.wantLaunch = false }
+
+func (m *DiscoverModel) SetLaunchResult(link, err string) {
+	m.launching = false
+	m.wantLaunch = false
+	if link != "" {
+		m.flash = "Opened " + link
+		m.flashOK = true
+		if err != "" {
+			m.flash += " (" + err + ")"
+			m.flashOK = false
+		}
+		return
+	}
+	if err != "" {
+		m.flash = err
+		m.flashOK = false
+	}
+}
+
+func (m *DiscoverModel) beginLaunch() {
+	if m.tab != 0 {
+		if rows := m.rows(); len(rows) > 0 && m.cursor < len(rows) {
+			m.detail = true
+		}
+		return
+	}
+	if m.launching {
+		return
+	}
+	rows := m.rows()
+	if len(rows) == 0 || m.cursor >= len(rows) {
+		return
+	}
+	e := rows[m.cursor]
+	m.wantLaunch = true
+	m.launchSCID = e.SCID
+	m.launching = true
+	m.cancelLaunch = new(atomic.Bool)
+	name := e.Name
+	if name == "" {
+		name = e.DURL
+	}
+	m.flash = "Opening " + name + "…"
+	m.flashOK = true
+}
+
 func (m DiscoverModel) Init() tea.Cmd { return nil }
 
 func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
@@ -351,6 +416,16 @@ func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
 	case tea.KeyPressMsg:
 		switch {
 		case key.Matches(msg, pageEscKeys):
+			if m.launching {
+				if m.cancelLaunch != nil {
+					m.cancelLaunch.Store(true)
+				}
+				m.launching = false
+				m.wantLaunch = false
+				m.flash = "Launch cancelled"
+				m.flashOK = false
+				return m, nil
+			}
 			if m.detail {
 				m.detail = false
 				return m, nil
@@ -358,8 +433,24 @@ func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
 			m.cancelled = true
 			return m, nil
 		case key.Matches(msg, discoverEnterKeys):
+			m.beginLaunch()
+			return m, nil
+		case key.Matches(msg, discoverInfoKeys):
 			if rows := m.rows(); len(rows) > 0 && m.cursor < len(rows) {
-				m.detail = true
+				m.detail = !m.detail
+			}
+			return m, nil
+		case key.Matches(msg, discoverCopySCID):
+			if m.detail {
+				if rows := m.rows(); len(rows) > 0 && m.cursor < len(rows) {
+					if err := clipboard.WriteAll(rows[m.cursor].SCID); err == nil {
+						m.flash = "SCID copied!"
+						m.flashOK = true
+					} else {
+						m.flash = "Copy failed"
+						m.flashOK = false
+					}
+				}
 			}
 			return m, nil
 		case key.Matches(msg, discoverSortKey):
@@ -415,14 +506,32 @@ func (m DiscoverModel) View() string {
 		b.WriteString(m.renderTable(rows))
 		b.WriteString("\n")
 	}
+	if m.flash != "" {
+		st := styles.ErrorStyle
+		if m.flashOK {
+			st = styles.SuccessStyle
+		}
+		b.WriteString(st.Render(m.flash))
+		b.WriteString("\n")
+	}
 	b.WriteString("\n")
 	order := "↓"
 	if !m.descending {
 		order = "↑"
 	}
-	footer := "[1-3]/Tab tabs  [F]ilter  [S]ort " + discoverSortModes[m.sort] + order + "  [O]rder  ↑↓  [Enter] Info  [Esc] Back"
+	// Compact hint style (matches txdetails) so the footer fits one line in
+	// the 72-char box interior even with the position counter appended.
+	// F (filter) omitted: it's the only key that opens a text input, and the
+	// filter box renders its own hint row when active.
+	footer := "Tab • S Sort " + discoverSortModes[m.sort] + order + " • O Ord"
+	if m.tab == 0 {
+		footer += " • Ent Launch • I Info"
+	} else {
+		footer += " • Ent • I Info"
+	}
+	footer += " • Esc"
 	if len(rows) > 0 {
-		footer += fmt.Sprintf("  %d / %d", m.cursor+1, len(rows))
+		footer += fmt.Sprintf(" • %d/%d", m.cursor+1, len(rows))
 	}
 	b.WriteString(styles.MutedStyle.Render(footer))
 	content := lipgloss.JoinVertical(lipgloss.Left, discTitle("Discover"), "", b.String())
@@ -511,10 +620,27 @@ func discRow(e wallet.CatalogEntry, selected bool) string {
 	)
 }
 
-// discRatingCell renders the 0-10 average (or "—" when unrated) colored by
-// Engram's rating tiers: purple ≥9, green ≥7, yellow ≥5, red otherwise.
+// discStars converts the 0-10 average into a 5-star glyph row (one star per
+// 2 points, rounded to nearest). Unrated entries render a bare dash.
+func discStars(e wallet.CatalogEntry) string {
+	if e.AvgRating <= 0 {
+		return "—"
+	}
+	filled := int(math.Round(e.AvgRating / 2))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > 5 {
+		filled = 5
+	}
+	return strings.Repeat("★", filled) + strings.Repeat("☆", 5-filled)
+}
+
+// discRatingCell renders the star row only (numeric average lives in the
+// detail popup), colored by Engram's rating tiers: purple ≥9, green ≥7,
+// yellow ≥5, red otherwise.
 func discRatingCell(e wallet.CatalogEntry) string {
-	label, tier := e.RatingDisplay()
+	_, tier := e.RatingDisplay()
 	if tier == wallet.RatingTierNone {
 		return lipgloss.NewStyle().Foreground(styles.ColorMuted).Render("—")
 	}
@@ -529,17 +655,26 @@ func discRatingCell(e wallet.CatalogEntry) string {
 	default:
 		fg = styles.ColorError
 	}
-	return lipgloss.NewStyle().Foreground(fg).Bold(true).Render(label)
+	return lipgloss.NewStyle().Foreground(fg).Bold(true).Render(discStars(e))
 }
 
-// ratingDetailText formats the popup's Rating row: average plus like/dislike
-// counts, e.g. "7.5 / 10  (12 likes, 3 dislikes)".
+// ratingDetailText formats the popup's Rating row: stars, average, and
+// like/dislike counts, e.g. "★★★★☆ 7.5 / 10  (12 likes, 3 dislikes)".
 func ratingDetailText(e wallet.CatalogEntry) string {
 	label, tier := e.RatingDisplay()
 	if tier == wallet.RatingTierNone {
 		return ""
 	}
-	return fmt.Sprintf("%s / 10  (%d likes, %d dislikes)", label, e.Likes, e.Dislikes)
+	return fmt.Sprintf("%s %s / 10  (%d likes, %d dislikes)", discStars(e), label, e.Likes, e.Dislikes)
+}
+
+// discClipSCID shortens a 64-hex SCID to head8...tail8 so it fits the
+// detail popup's 64-char interior on one line. Short SCIDs pass through.
+func discClipSCID(scid string) string {
+	if len(scid) <= 20 {
+		return scid
+	}
+	return scid[:8] + "..." + scid[len(scid)-8:]
 }
 
 // discDetail renders the full-info popup for the selected entry.
@@ -568,9 +703,14 @@ func (m DiscoverModel) discDetail(e wallet.CatalogEntry) string {
 		lines = append(lines, row("Installed at", fmt.Sprintf("height %d", e.InstallHeight)))
 	}
 	lines = append(lines,
+		row("SCID", discClipSCID(e.SCID)),
 		"",
-		row("SCID", e.SCID),
 	)
+	hint := "I Close  C Copy SCID"
+	if m.tab == 0 {
+		hint = "Ent Launch  I Close  C Copy SCID"
+	}
+	lines = append(lines, styles.MutedStyle.Render(hint))
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)
 	box := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

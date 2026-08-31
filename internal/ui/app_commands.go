@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -701,6 +702,28 @@ func (m *Model) getEffectiveNetwork(file string) (testnet, simulator bool) {
 	// 3) No network known - return mainnet as safe default (user will be prompted if needed)
 	// NEVER return m.Opts.Testnet here as that can carry stale state
 	return false, false
+}
+
+func (m *Model) launchTelaCmd(scid string, cancel *atomic.Bool) tea.Cmd {
+	endpoint := strings.TrimSpace(m.cachedDaemonAddress)
+	if m.wallet != nil {
+		if d := strings.TrimSpace(m.wallet.GetDaemonAddress()); d != "" && d != "Not connected" {
+			endpoint = d
+		}
+	}
+	return func() tea.Msg {
+		if endpoint == "" || endpoint == "Not connected" {
+			return telaLaunchMsg{err: "daemon not connected"}
+		}
+		link, err := wallet.ServeTela(scid, endpoint, cancel)
+		if err != nil {
+			return telaLaunchMsg{err: err.Error()}
+		}
+		if berr := wallet.OpenBrowser(link); berr != nil {
+			return telaLaunchMsg{link: link, err: berr.Error()}
+		}
+		return telaLaunchMsg{link: link}
+	}
 }
 
 // startXSWDCmd returns a command that starts the XSWD server in the background.

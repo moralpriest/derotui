@@ -1273,6 +1273,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+	case telaLaunchMsg:
+		m.discover.SetLaunchResult(msg.link, msg.err)
+
 	case discoverCatalogMsg:
 		m.handleDiscoverCatalog(msg)
 
@@ -1606,6 +1609,7 @@ func (m *Model) shutdownSession(quitting bool) tea.Cmd {
 	}
 
 	return func() tea.Msg {
+		wallet.ShutdownTela()
 		if bridge != nil {
 			bridge.Stop()
 		}
@@ -2020,7 +2024,7 @@ func (m *Model) maybeLoadDiscoverCatalog() tea.Cmd {
 	}
 	m.discoverCatalogLoading = true
 	return func() tea.Msg {
-		tela := h.Catalog("TELA-INDEX-1")
+		tela := wallet.FilterLaunchableTela(h.Catalog("TELA-INDEX-1"))
 		classCount := len(h.SCIDsByClass("TELA-INDEX-1")) + len(h.SCIDsByClass("G45-NFT")) + len(h.SCIDsByClass("NFA"))
 		classifying := h.Count() > 0 && classCount == 0
 		return discoverCatalogMsg{tela: tela, classifying: classifying}
@@ -2537,6 +2541,13 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 				m.page = PageWelcome
 			}
 			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if scid, cancel, ok := m.discover.WantLaunch(); ok {
+			m.discover.ResetActions()
+			cmds = append(cmds, m.launchTelaCmd(scid, cancel))
+			if m.wallet != nil && (m.xswdBridge == nil || !m.xswdBridge.IsRunning()) {
+				cmds = append(cmds, m.startXSWDCmd())
+			}
 		}
 
 	case PageTokens:

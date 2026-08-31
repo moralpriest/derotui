@@ -45,6 +45,7 @@ Thumbs.db
 backups/
 
 # Local directories
+datashards/
 history/
 mainnet/
 mainnet_simulator/

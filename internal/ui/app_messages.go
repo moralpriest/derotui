@@ -197,6 +197,12 @@ type nameTransferResultMsg struct {
 // hang forever.
 type xswdDialogTimeoutMsg struct{}
 
+// telaLaunchMsg is the result of cloning/serving a TELA dApp.
+type telaLaunchMsg struct {
+	link string
+	err  string
+}
+
 // tokensLoadedMsg carries tokens loaded wallet-locally (balances + tracked
 // SCIDs). Metadata may still be missing; the scan hydrates it incrementally.
 type tokensLoadedMsg struct {

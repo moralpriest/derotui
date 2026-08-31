@@ -197,6 +197,30 @@ func TestDiscoverSortRating(t *testing.T) {
 	}
 }
 
+func TestDiscStars(t *testing.T) {
+	cases := []struct {
+		rating float64
+		want   string
+	}{
+		{0.0, "—"},
+		{-1.0, "—"},
+		{9.9, "★★★★★"},
+		{9.0, "★★★★★"}, // 4.5 rounds to 5
+		{8.9, "★★★★☆"},
+		{7.5, "★★★★☆"},
+		{5.0, "★★★☆☆"},
+		{3.1, "★★☆☆☆"},
+		{1.0, "★☆☆☆☆"}, // 0.5 rounds up (half-up convention)
+		{0.4, "☆☆☆☆☆"},
+	}
+	for _, tc := range cases {
+		got := discStars(wallet.CatalogEntry{AvgRating: tc.rating})
+		if got != tc.want {
+			t.Fatalf("discStars(%v) = %q, want %q", tc.rating, got, tc.want)
+		}
+	}
+}
+
 func TestDiscoverDetailPopup(t *testing.T) {
 	m := NewDiscover()
 	m.SetCatalog([]wallet.CatalogEntry{{
@@ -207,9 +231,9 @@ func TestDiscoverDetailPopup(t *testing.T) {
 	if m.detail {
 		t.Fatal("detail should start closed")
 	}
-	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = m.Update(tea.KeyPressMsg{Text: "i"})
 	if !m.detail {
-		t.Fatal("Enter should open detail")
+		t.Fatal("I should open detail")
 	}
 	v := m.View()
 	if !containsStr(v, "vault.tela") || !containsStr(v, "Password vault") || !containsStr(v, "height 12345") || !containsStr(v, "vault, tool") {
@@ -226,6 +250,53 @@ func TestDiscoverDetailPopup(t *testing.T) {
 	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	if !m.Cancelled() {
 		t.Fatal("second Esc should cancel page")
+	}
+}
+
+func TestDiscoverEnterLaunchesTela(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "aa", Class: "TELA-INDEX-1", Name: "vault.tela", DURL: "vault.tela"},
+	}, nil, nil, false)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	scid, cancel, ok := m.WantLaunch()
+	if !ok || scid != "aa" || cancel == nil {
+		t.Fatalf("WantLaunch: ok=%v scid=%q cancel=%v", ok, scid, cancel)
+	}
+	if !m.launching || m.detail {
+		t.Fatal("Enter should launch, not open detail")
+	}
+	if !containsStr(m.View(), "Opening vault.tela") {
+		t.Fatalf("flash: %q", m.View())
+	}
+}
+
+func TestDiscoverEnterOnNFTOpensDetail(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog(nil, []wallet.CatalogEntry{{SCID: "bb", Class: "G45-NFT", Name: "Cool NFT"}}, nil, false)
+	m, _ = m.Update(tea.KeyPressMsg{Text: "2"})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	if _, _, ok := m.WantLaunch(); ok {
+		t.Fatal("NFT Enter should not launch")
+	}
+	if !m.detail {
+		t.Fatal("NFT Enter should open detail")
+	}
+}
+
+func TestDiscoverEscCancelsLaunch(t *testing.T) {
+	m := NewDiscover()
+	m.SetCatalog([]wallet.CatalogEntry{
+		{SCID: "aa", Class: "TELA-INDEX-1", Name: "vault.tela", DURL: "vault.tela"},
+	}, nil, nil, false)
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, cancel, _ := m.WantLaunch()
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.launching || m.Cancelled() {
+		t.Fatal("Esc during launch should cancel clone, not leave page")
+	}
+	if cancel == nil || !cancel.Load() {
+		t.Fatal("cancel flag")
 	}
 }
 
