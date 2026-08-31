@@ -520,19 +520,14 @@ func (m DiscoverModel) View() string {
 		order = "↑"
 	}
 	// Compact hint style (matches txdetails) so the footer fits one line in
-	// the 72-char box interior even with the position counter appended.
-	// F (filter) omitted: it's the only key that opens a text input, and the
-	// filter box renders its own hint row when active.
-	footer := "Tab • S Sort " + discoverSortModes[m.sort] + order + " • O Ord"
+	// the 72-char box interior. n/m counter dropped to make room for F Filter.
+	footer := "Tab • S Sort " + discoverSortModes[m.sort] + order + " • O Ord • F Filter"
 	if m.tab == 0 {
 		footer += " • Ent Launch • I Info"
 	} else {
 		footer += " • Ent • I Info"
 	}
 	footer += " • Esc"
-	if len(rows) > 0 {
-		footer += fmt.Sprintf(" • %d/%d", m.cursor+1, len(rows))
-	}
 	b.WriteString(styles.MutedStyle.Render(footer))
 	content := lipgloss.JoinVertical(lipgloss.Left, discTitle("Discover"), "", b.String())
 	return styles.ThemedBoxStyle().

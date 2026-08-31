@@ -312,3 +312,10 @@ func TestDiscoverFilterMatchesDesc(t *testing.T) {
 		t.Fatalf("filter by desc: %v", rows)
 	}
 }
+
+func TestDiscoverFooterShowsFilter(t *testing.T) {
+	m := NewDiscover()
+	if !containsStr(m.View(), "F Filter") {
+		t.Fatalf("footer missing F Filter: %q", m.View())
+	}
+}
