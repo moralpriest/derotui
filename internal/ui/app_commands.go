@@ -727,10 +727,32 @@ func (m *Model) launchTelaCmd(scid string, cancel *atomic.Bool) tea.Cmd {
 }
 
 // startXSWDCmd returns a command that starts the XSWD server in the background.
+// Idempotent: if a bridge is already set (even if it is still mid-start from a
+// previous command), reuse it instead of starting a second server — a second
+// StartXSWD would fail to bind port 44326 and surface a spurious
+// "XSWD server failed to start" error while the first server runs fine.
 func (m *Model) startXSWDCmd() tea.Cmd {
 	return func() tea.Msg {
 		if m.wallet == nil || m.program == nil {
+			m.xswdStarting = false
 			return wallet.XSWDStartedMsg{Err: fmt.Errorf("wallet or program not ready")}
+		}
+		if m.xswdStarting {
+			// A start is already in flight from this Update batch (e.g. dashboard
+			// X toggle racing a TELA launch, or a double keypress): don't start a
+			// second server. Both commands saw xswdBridge == nil and both called
+			// StartXSWD; the loser fails to bind port 44326.
+			return wallet.XSWDStartedMsg{Bridge: m.xswdBridge}
+		}
+		m.xswdStarting = true
+		defer func() { m.xswdStarting = false }()
+		if m.xswdBridge != nil {
+			if m.xswdBridge.IsRunning() {
+				return wallet.XSWDStartedMsg{Bridge: m.xswdBridge}
+			}
+			// Stale dead bridge from a previous wallet session: drop it and restart.
+			m.xswdBridge.Stop()
+			m.xswdBridge = nil
 		}
 		bridge := wallet.StartXSWD(m.wallet.GetDisk(), m.program, m.wallet.GetInfo().Address, m.wallet.GetInfo().DaemonAddress, m.wallet.GetInfo().Network)
 		if !bridge.IsRunning() {

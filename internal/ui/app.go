@@ -186,6 +186,7 @@ type Model struct {
 	// XSWD
 	program      wallet.MsgSender // tea.Program reference for XSWD message injection
 	xswdBridge   *wallet.XSWDBridge
+	xswdStarting bool // in-flight guard: a startXSWDCmd is running (same-batch double start)
 	xswdAuth     pages.XSWDAuthModel
 	xswdPerm     pages.XSWDPermModel
 	xswdPrevPage Page      // page to return to after dialog
