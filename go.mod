@@ -90,7 +90,7 @@ replace github.com/deroproject/derohe => ../derohe
 
 replace github.com/hypergnomon/hypergnomon => ../HyperGnomon
 
-replace github.com/civilware/epoch => github.com/moralpriest/epoch v0.0.0-20260812013238-2104b271e52a
+replace github.com/civilware/epoch => ../epoch
 
 replace github.com/creachadair/jrpc2 => github.com/creachadair/jrpc2 v0.35.4
 
