@@ -464,6 +464,59 @@ func lookupSCVars(endpoint, scid string, keys []string) map[string]string {
 	return vals
 }
 
+func liveSCVariables(endpoint, scid string) []*hgstructures.SCIDVariable {
+	scid = strings.ToLower(strings.TrimSpace(scid))
+	endpoint = strings.TrimSpace(endpoint)
+	if scid == "" || endpoint == "" {
+		return nil
+	}
+	rpcURL, err := daemonRPCURL(endpoint)
+	if err != nil {
+		return nil
+	}
+	params := rpc.GetSC_Params{SCID: scid, Variables: true}
+	bodyBytes, err := json.Marshal(map[string]interface{}{
+		"jsonrpc": "2.0", "id": "1", "method": "DERO.GetSC", "params": params,
+	})
+	if err != nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, strings.NewReader(string(bodyBytes)))
+	if err != nil {
+		return nil
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := sharedHTTPClient.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil
+	}
+	var rpcResp struct {
+		Result rpc.GetSC_Result `json:"result"`
+	}
+	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return nil
+	}
+	n := len(rpcResp.Result.VariableStringKeys) + len(rpcResp.Result.VariableUint64Keys)
+	if n == 0 {
+		return nil
+	}
+	out := make([]*hgstructures.SCIDVariable, 0, n)
+	for k, v := range rpcResp.Result.VariableStringKeys {
+		out = append(out, &hgstructures.SCIDVariable{Key: k, Value: v})
+	}
+	for k, v := range rpcResp.Result.VariableUint64Keys {
+		out = append(out, &hgstructures.SCIDVariable{Key: k, Value: v})
+	}
+	return out
+}
+
 func LookupSCName(endpoint, scid string) string {
 	scid = strings.ToLower(strings.TrimSpace(scid))
 	if scid == "" {

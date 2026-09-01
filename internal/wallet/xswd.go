@@ -3,14 +3,22 @@
 package wallet
 
 import (
+	"context"
 	"fmt"
+	"net"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/civilware/epoch"
 	"github.com/creachadair/jrpc2"
+	"github.com/creachadair/jrpc2/handler"
+	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"github.com/deroproject/dero-wallet-cli/internal/log"
 	"github.com/deroproject/derohe/walletapi"
 	"github.com/deroproject/derohe/walletapi/xswd"
+	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
+	hgstruct "github.com/hypergnomon/hypergnomon/pkg/gnomes/structures"
 )
 
 // XSWDDialogTimeout is how long the TUI may show an auth/permission dialog
@@ -42,11 +50,20 @@ const (
 type XSWDBridge struct {
 	server       *xswd.XSWD
 	epochRunning bool
+	epochErr     error
 }
 
 // EpochRunning reports whether the EPOCH GetWork connection is active.
 func (b *XSWDBridge) EpochRunning() bool {
 	return b != nil && b.epochRunning
+}
+
+// EpochError is the GetWork connect failure, if any.
+func (b *XSWDBridge) EpochError() error {
+	if b == nil {
+		return nil
+	}
+	return b.epochErr
 }
 
 type MsgSender interface {
@@ -73,12 +90,18 @@ type XSWDStartedMsg struct {
 // every attempt, while sensitive wallet methods (transfer, query_key, ...)
 // still require explicit user approval.
 var epochMethods = map[string]bool{
-	"AttemptEPOCH":      true,
-	"SubmitEPOCH":       true,
-	"GetMaxHashesEPOCH": true,
-	"GetAddressEPOCH":   true,
-	"GetSessionEPOCH":   true,
-	"StopEPOCH":         true,
+	"AttemptEPOCH":         true,
+	"AttemptEPOCHWithAddr": true,
+	"SubmitEPOCH":          true,
+	"GetMaxHashesEPOCH":    true,
+	"GetAddressEPOCH":      true,
+	"GetSessionEPOCH":      true,
+	"StopEPOCH":            true,
+}
+
+type attemptWithAddrParams struct {
+	Hashes  int    `json:"hashes"`
+	Address string `json:"address"`
 }
 
 // isEpochMethod reports whether the given XSWD method belongs to the EPOCH
@@ -87,32 +110,137 @@ func isEpochMethod(method string) bool {
 	return epochMethods[method]
 }
 
+func isGnomonMethod(method string) bool {
+	return strings.HasPrefix(method, "Gnomon.")
+}
+
+type gnomonSCIDParam struct {
+	SCID string `json:"scid"`
+}
+
+type gnomonAllVarsResult struct {
+	AllVariables []*hgstruct.SCIDVariable `json:"allVariables"`
+}
+
+func appHyperStore() *hgstorage.BboltStore {
+	globalAppHyperMu.RLock()
+	h := globalAppHyper
+	globalAppHyperMu.RUnlock()
+	if h == nil {
+		return nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.store
+}
+
+func gnomonGetAllSCIDVariableDetails(_ context.Context, p gnomonSCIDParam) (gnomonAllVarsResult, error) {
+	globalAppHyperMu.RLock()
+	h := globalAppHyper
+	globalAppHyperMu.RUnlock()
+	if h == nil {
+		return gnomonAllVarsResult{}, fmt.Errorf("gnomon is not active")
+	}
+	scid := strings.ToLower(strings.TrimSpace(p.SCID))
+	var vars []*hgstruct.SCIDVariable
+	if store := appHyperStore(); store != nil {
+		vars = store.GetSCIDVariableDetailsAtTopoheight(scid, 0)
+	}
+	if len(vars) == 0 {
+		vars = liveSCVariables(h.Endpoint(), scid)
+	}
+	return gnomonAllVarsResult{AllVariables: vars}, nil
+}
+
+func registerGnomon(server *xswd.XSWD) {
+	server.SetCustomMethod("Gnomon.GetAllSCIDVariableDetails", handler.New(gnomonGetAllSCIDVariableDetails))
+}
+
 // startEpoch registers the EPOCH handlers on the XSWD server and connects to
 // the daemon's GetWork endpoint. It returns the XSWD server so the caller can
 // keep starting it even when EPOCH fails (the TELA dApp still works, just
 // without crowd-mining). Errors are logged and surfaced via the returned error.
-func startEpoch(server *xswd.XSWD, rewardAddress, daemonAddress, network string) error {
+func epochGetWorkPort(network, getWorkBind string) int {
+	if _, port, err := net.SplitHostPort(strings.TrimSpace(getWorkBind)); err == nil {
+		if p, err := strconv.Atoi(port); err == nil && p > 0 && p <= 65535 {
+			return p
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(network)) {
+	case "testnet":
+		return 40400
+	case "simulator":
+		return 20003
+	default:
+		return 10100
+	}
+}
+
+func attemptEPOCHWithAddr(ctx context.Context, p attemptWithAddrParams, w *walletapi.Wallet_Disk, daemonHP string) (epoch.EPOCH_Result, error) {
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return epoch.EPOCH_Result{}, err
+		}
+	}
+	if strings.TrimSpace(p.Address) == "" {
+		return epoch.EPOCH_Result{}, fmt.Errorf("address param cannot be empty")
+	}
+	addr := strings.TrimSpace(p.Address)
+	if len(addr) < 66 && w != nil {
+		resolved, err := w.NameToAddress(addr)
+		if err != nil {
+			return epoch.EPOCH_Result{}, fmt.Errorf("could not match name to DERO address: %w", err)
+		}
+		addr = resolved
+	}
+	if p.Hashes > epoch.GetMaxHashes() {
+		return epoch.EPOCH_Result{}, fmt.Errorf("hashes exceeds maxHashes %d/%d", p.Hashes, epoch.GetMaxHashes())
+	}
+	if daemonHP == "" {
+		return epoch.EPOCH_Result{}, fmt.Errorf("daemon not connected")
+	}
+	if !epoch.IsActive() || epoch.GetAddress() != addr {
+		if epoch.IsActive() {
+			epoch.StopGetWork()
+		}
+		if err := epoch.StartGetWork(addr, daemonHP); err != nil {
+			return epoch.EPOCH_Result{}, err
+		}
+		if err := epoch.JobIsReady(10 * time.Second); err != nil {
+			return epoch.EPOCH_Result{}, err
+		}
+	}
+	return epoch.AttemptHashes(p.Hashes)
+}
+
+func startEpoch(server *xswd.XSWD, w *walletapi.Wallet_Disk, rewardAddress, daemonAddress, network string) error {
 	for method, fn := range epoch.GetHandler() {
 		server.SetCustomMethod(method, fn)
 	}
+	hp, _ := daemonHostPort(daemonAddress)
+	server.SetCustomMethod("AttemptEPOCHWithAddr", handler.New(func(ctx context.Context, p attemptWithAddrParams) (epoch.EPOCH_Result, error) {
+		return attemptEPOCHWithAddr(ctx, p, w, hp)
+	}))
 
 	if daemonAddress == "" || daemonAddress == "Not connected" {
 		return fmt.Errorf("daemon not connected")
 	}
-
-	switch network {
-	case "Testnet":
-		_ = epoch.SetPort(40400)
-	case "Simulator":
-		_ = epoch.SetPort(20000)
-	default:
-		_ = epoch.SetPort(10100)
+	if hp == "" {
+		var err error
+		hp, err = daemonHostPort(daemonAddress)
+		if err != nil {
+			return err
+		}
+	}
+	port := epochGetWorkPort(network, config.GetDaemonSettings().GetWorkBind)
+	if err := epoch.SetPort(port); err != nil {
+		return err
 	}
 
-	if err := epoch.StartGetWork(rewardAddress, daemonAddress); err != nil {
+	if err := epoch.StartGetWork(rewardAddress, hp); err != nil {
 		return fmt.Errorf("epoch: %w", err)
 	}
-	log.Info("epoch", "start", "EPOCH GetWork started", "daemon", daemonAddress, "network", network)
+	log.Info("epoch", "start", "EPOCH GetWork started", "daemon", hp, "getwork", strconv.Itoa(port), "network", network)
 	return nil
 }
 
@@ -150,7 +278,7 @@ func StartXSWD(w *walletapi.Wallet_Disk, sender MsgSender, rewardAddress, daemon
 		func(app *xswd.ApplicationData, req *jrpc2.Request) xswd.Permission {
 			// EPOCH crowd-mining methods are non-sensitive and cheap; auto-allow
 			// them so a TELA dApp does not trigger a permission dialog per attempt.
-			if isEpochMethod(req.Method()) {
+			if isEpochMethod(req.Method()) || isGnomonMethod(req.Method()) {
 				return xswd.AlwaysAllow
 			}
 
@@ -175,7 +303,9 @@ func StartXSWD(w *walletapi.Wallet_Disk, sender MsgSender, rewardAddress, daemon
 	)
 
 	bridge.server = server
-	if err := startEpoch(server, rewardAddress, daemonAddress, network); err != nil {
+	registerGnomon(server)
+	if err := startEpoch(server, w, rewardAddress, daemonAddress, network); err != nil {
+		bridge.epochErr = err
 		log.Warn("epoch", "start.failed", "EPOCH not started", "error", err.Error())
 	} else {
 		bridge.epochRunning = true

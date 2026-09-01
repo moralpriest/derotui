@@ -1274,7 +1274,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case telaLaunchMsg:
-		m.discover.SetLaunchResult(msg.link, msg.err)
+		note := msg.err
+		if m.xswdBridge != nil && !m.xswdBridge.EpochRunning() {
+			e := "EPOCH not connected"
+			if err := m.xswdBridge.EpochError(); err != nil {
+				e = "EPOCH: " + err.Error()
+			}
+			if note != "" {
+				note = note + "; " + e
+			} else {
+				note = e
+			}
+		}
+		m.discover.SetLaunchResult(msg.link, note)
 
 	case discoverCatalogMsg:
 		m.handleDiscoverCatalog(msg)
@@ -1493,6 +1505,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dashboard.SetXSWDRunning(false)
 				m.dashboard.SetFlashMessage("XSWD: "+msg.Err.Error(), false)
 			}
+			if m.page == PageDiscover {
+				m.discover.SetLaunchResult("", "XSWD: "+msg.Err.Error())
+			}
 		} else {
 			derolog.Info("xswd", "start.success", "XSWD server started")
 			m.xswdBridge = msg.Bridge
@@ -1500,7 +1515,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Bridge != nil && msg.Bridge.EpochRunning() {
 				m.dashboard.SetFlashMessage("XSWD + EPOCH running", true)
 			} else {
-				m.dashboard.SetFlashMessage("XSWD server running", true)
+				why := "not connected"
+				if msg.Bridge != nil {
+					if err := msg.Bridge.EpochError(); err != nil {
+						why = err.Error()
+					}
+				}
+				m.dashboard.SetFlashMessage("XSWD running (EPOCH failed: "+why+")", false)
 			}
 		}
 
@@ -2544,9 +2565,11 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 		}
 		if scid, cancel, ok := m.discover.WantLaunch(); ok {
 			m.discover.ResetActions()
-			cmds = append(cmds, m.launchTelaCmd(scid, cancel))
+			launch := m.launchTelaCmd(scid, cancel)
 			if m.wallet != nil && (m.xswdBridge == nil || !m.xswdBridge.IsRunning()) {
-				cmds = append(cmds, m.startXSWDCmd())
+				cmds = append(cmds, tea.Sequence(m.startXSWDCmd(), launch))
+			} else {
+				cmds = append(cmds, launch)
 			}
 		}
 
