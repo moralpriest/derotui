@@ -590,29 +590,32 @@ func (w WelcomeModel) View() string {
 		}
 	}
 
-	// Build custom frame with embedded version in top border
+	// Build custom frame with embedded brand and version in top border
 	boxWidth := styles.Width
 	horizontalPadding := welcomeFramePadding
 	innerWidth := welcomeFrameInnerWidth
 
+	// Brand on the left, version on the right.
+	brandLabel := "deroTUI"
 	versionStr := "v" + w.Version
+	leftLabel := " " + brandLabel + " "
+	rightLabel := " " + versionStr + " "
+	totalDashes := boxWidth - 2 - lipgloss.Width(leftLabel) - lipgloss.Width(rightLabel)
+	if totalDashes < 0 {
+		totalDashes = 0
+	}
 
-	// Build top border with version embedded near the right corner
-	// Format: ╭───────────────── v0.1.0 ──╮
-	totalDashes := boxWidth - 4 - len(versionStr)
-	leftDashes := totalDashes - 4 // Most dashes on left
-	rightDashes := 4              // Just 4 dashes before corner
-
-	// Build the styled top border
+	// Build the styled top border using visible column widths.
 	cornerStyle := lipgloss.NewStyle().Foreground(styles.ColorBorder)
 	dashStyle := lipgloss.NewStyle().Foreground(styles.ColorBorder)
 	leftCorner := cornerStyle.Render("╭")
 	rightCorner := cornerStyle.Render("╮")
-	leftDashStr := dashStyle.Render(strings.Repeat("─", leftDashes))
-	rightDashStr := dashStyle.Render(strings.Repeat("─", rightDashes))
-	versionStyled := styles.MutedStyle.Render(versionStr)
+	dashStr := dashStyle.Render(strings.Repeat("─", totalDashes))
 
-	topBorder := leftCorner + leftDashStr + " " + versionStyled + " " + rightDashStr + rightCorner
+	brandStyled := styles.TitleStyle.Render(leftLabel)
+	versionStyled := styles.MutedStyle.Render(rightLabel)
+
+	topBorder := leftCorner + brandStyled + dashStr + versionStyled + rightCorner
 
 	// Build side borders for content with padding and centering
 	borderStyle := lipgloss.NewStyle().Foreground(styles.ColorBorder)

@@ -3247,26 +3247,25 @@ func (m Model) renderDashboard() string {
 		contentWidth = styles.Width - 2
 	}
 
+	// Brand on the left, version on the right.
+	brandLabel := "deroTUI"
 	versionStr := "v" + Version
-	totalDashes := contentWidth - len(versionStr) - 2
-	if totalDashes < 2 {
-		totalDashes = 2
+	leftLabel := " " + brandLabel + " "
+	rightLabel := " " + versionStr + " "
+	totalDashes := contentWidth - lipgloss.Width(leftLabel) - lipgloss.Width(rightLabel)
+	if totalDashes < 0 {
+		totalDashes = 0
 	}
-
-	rightDashes := 4
-	if totalDashes < rightDashes {
-		rightDashes = totalDashes / 2
-	}
-	leftDashes := totalDashes - rightDashes
 
 	cornerStyle := lipgloss.NewStyle().Foreground(styles.ColorBorder)
 	dashStyle := lipgloss.NewStyle().Foreground(styles.ColorBorder)
 	leftCorner := cornerStyle.Render("╭")
 	rightCorner := cornerStyle.Render("╮")
-	leftDashStr := dashStyle.Render(strings.Repeat("─", leftDashes))
-	rightDashStr := dashStyle.Render(strings.Repeat("─", rightDashes))
-	versionStyled := styles.MutedStyle.Render(versionStr)
-	topBorder := leftCorner + leftDashStr + " " + versionStyled + " " + rightDashStr + rightCorner
+	dashStr := dashStyle.Render(strings.Repeat("─", totalDashes))
+
+	brandStyled := styles.TitleStyle.Render(leftLabel)
+	versionStyled := styles.MutedStyle.Render(rightLabel)
+	topBorder := leftCorner + brandStyled + dashStr + versionStyled + rightCorner
 
 	borderStyle := lipgloss.NewStyle().Foreground(styles.ColorBorder)
 	sideBorder := borderStyle.Render("│")
