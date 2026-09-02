@@ -433,7 +433,12 @@ func (s TokenSendModel) View() string {
 		sections = append(sections, errorView)
 	}
 	sections = append(sections, hints)
-	return lipgloss.JoinVertical(lipgloss.Left, sections...)
+	content := lipgloss.JoinVertical(lipgloss.Left, sections...)
+	return styles.ThemedBoxStyle().
+		Width(styles.Width).
+		Align(lipgloss.Center).
+		Padding(1, 4).
+		Render(content)
 }
 
 // HandleMouse for token send
