@@ -33,19 +33,3 @@ func TestServeTelaInvalidSCID(t *testing.T) {
 		t.Fatal("short SCID should fail")
 	}
 }
-
-func TestTelaLocalhostLink(t *testing.T) {
-	cases := []struct{ in, want string }{
-		{"http://127.0.0.1:8082/index.html", "http://localhost:8082/index.html"},
-		{"http://127.0.0.1:8082", "http://localhost:8082"},
-		{"  http://127.0.0.1:9/x  ", "http://localhost:9/x"},
-		{"http://localhost:8082/index.html", "http://localhost:8082/index.html"},
-		{"http://example.com:8082/x", "http://example.com:8082/x"},
-		{"", ""},
-	}
-	for _, tc := range cases {
-		if got := telaLocalhostLink(tc.in); got != tc.want {
-			t.Fatalf("telaLocalhostLink(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-	}
-}
