@@ -4,6 +4,8 @@ package wallet
 
 import (
 	"fmt"
+	"net"
+	"net/url"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -13,15 +15,31 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/log"
 )
 
+// telaLocalhostLink rewrites 127.0.0.1 to localhost. TELA binds 127.0.0.1 but
+// XSWD requires Origin == app.Url; Village hardcodes http://localhost:PORT.
+func telaLocalhostLink(link string) string {
+	link = strings.TrimSpace(link)
+	u, err := url.Parse(link)
+	if err != nil || u.Hostname() != "127.0.0.1" {
+		return link
+	}
+	host := "localhost"
+	if p := u.Port(); p != "" {
+		host = net.JoinHostPort(host, p)
+	}
+	u.Host = host
+	return u.String()
+}
+
 func existingTelaLink(scid string) string {
 	for _, s := range tela.GetServerInfo() {
 		if !strings.EqualFold(s.SCID, scid) {
 			continue
 		}
 		if s.Entrypoint == "" {
-			return "http://" + s.Address
+			return telaLocalhostLink("http://" + s.Address)
 		}
-		return "http://" + s.Address + "/" + s.Entrypoint
+		return telaLocalhostLink("http://" + s.Address + "/" + s.Entrypoint)
 	}
 	return ""
 }
@@ -50,7 +68,7 @@ func ServeTela(scid, endpoint string, cancelled *atomic.Bool) (string, error) {
 		return "", err
 	}
 	log.Info("tela", "serve", "TELA server started", "link", link, "scid", scid)
-	return link, nil
+	return telaLocalhostLink(link), nil
 }
 
 // ShutdownTela stops every TELA server and removes cloned files.
