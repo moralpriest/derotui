@@ -15,6 +15,7 @@ import (
 	"github.com/creachadair/jrpc2/handler"
 	"github.com/deroproject/dero-wallet-cli/internal/config"
 	"github.com/deroproject/dero-wallet-cli/internal/log"
+	"github.com/deroproject/derohe/rpc"
 	"github.com/deroproject/derohe/walletapi"
 	"github.com/deroproject/derohe/walletapi/xswd"
 	hgstorage "github.com/hypergnomon/hypergnomon/pkg/gnomes/storage"
@@ -114,6 +115,10 @@ func isGnomonMethod(method string) bool {
 	return strings.HasPrefix(method, "Gnomon.")
 }
 
+func isDeroMethod(method string) bool {
+	return strings.HasPrefix(method, "DERO.") || method == "GetSC"
+}
+
 type gnomonSCIDParam struct {
 	SCID string `json:"scid"`
 }
@@ -154,6 +159,14 @@ func gnomonGetAllSCIDVariableDetails(_ context.Context, p gnomonSCIDParam) (gnom
 
 func registerGnomon(server *xswd.XSWD) {
 	server.SetCustomMethod("Gnomon.GetAllSCIDVariableDetails", handler.New(gnomonGetAllSCIDVariableDetails))
+}
+
+func registerDeroGetSC(server *xswd.XSWD, daemonAddress string) {
+	fn := handler.New(func(_ context.Context, p rpc.GetSC_Params) (rpc.GetSC_Result, error) {
+		return daemonGetSC(daemonAddress, p)
+	})
+	server.SetCustomMethod("DERO.GetSC", fn)
+	server.SetCustomMethod("GetSC", fn)
 }
 
 // startEpoch registers the EPOCH handlers on the XSWD server and connects to
@@ -278,7 +291,7 @@ func StartXSWD(w *walletapi.Wallet_Disk, sender MsgSender, rewardAddress, daemon
 		func(app *xswd.ApplicationData, req *jrpc2.Request) xswd.Permission {
 			// EPOCH crowd-mining methods are non-sensitive and cheap; auto-allow
 			// them so a TELA dApp does not trigger a permission dialog per attempt.
-			if isEpochMethod(req.Method()) || isGnomonMethod(req.Method()) {
+			if isEpochMethod(req.Method()) || isGnomonMethod(req.Method()) || isDeroMethod(req.Method()) {
 				return xswd.AlwaysAllow
 			}
 
@@ -304,6 +317,7 @@ func StartXSWD(w *walletapi.Wallet_Disk, sender MsgSender, rewardAddress, daemon
 
 	bridge.server = server
 	registerGnomon(server)
+	registerDeroGetSC(server, daemonAddress)
 	if err := startEpoch(server, w, rewardAddress, daemonAddress, network); err != nil {
 		bridge.epochErr = err
 		log.Warn("epoch", "start.failed", "EPOCH not started", "error", err.Error())

@@ -240,23 +240,26 @@ type Model struct {
 	discoverRatingsLoading bool
 	discoverCatalogLoading bool
 	// Incremental token scan state (see tokenScanProgressMsg).
-	tokenScanID         int
-	tokenScanCandidates []string
-	tokenScanPending    []string
-	tokenRecheckActive  bool
-	tokenScanFound      int
-	tokenScanStartedAt  time.Time
-	hyperCompleteLogged bool
-	daemonManager       *daemonservice.Manager
-	embeddedDaemon      *daemonservice.EmbeddedDaemon
-	rpcMiner            minerservice.RPCBackend
-	daemonManagedSince  time.Time
-	lastEmbeddedError   string
-	pendingPrune        bool
-	pruneAppliedOnce    bool
-	applyingPrune       bool
-	hyperGnomon         *wallet.HyperGnomon
-	hyperMu             *sync.Mutex
+	tokenScanID           int
+	tokenScanCandidates   []string
+	tokenScanPending      []string
+	tokenRecheckActive    bool
+	tokenScanFound        int
+	tokenScanStartedAt    time.Time
+	hyperCompleteLogged   bool
+	hyperStarting         bool
+	hyperStartingEndpoint string
+	hyperStartingNetwork  string
+	daemonManager         *daemonservice.Manager
+	embeddedDaemon        *daemonservice.EmbeddedDaemon
+	rpcMiner              minerservice.RPCBackend
+	daemonManagedSince    time.Time
+	lastEmbeddedError     string
+	pendingPrune          bool
+	pruneAppliedOnce      bool
+	applyingPrune         bool
+	hyperGnomon           *wallet.HyperGnomon
+	hyperMu               *sync.Mutex
 }
 
 type pendingOutgoingTx struct {
@@ -1683,6 +1686,10 @@ func (m *Model) ensureHyperGnomonCmd(endpoint, network string) tea.Cmd {
 		m.hyperMu = &sync.Mutex{}
 	}
 	m.hyperMu.Lock()
+	if m.hyperStarting {
+		m.hyperMu.Unlock()
+		return nil
+	}
 	if m.hyperGnomon != nil && m.hyperGnomon.IsRunning() {
 		if strings.EqualFold(m.hyperGnomon.Network(), normNet) && m.hyperGnomon.Endpoint() == endpoint {
 			m.hyperMu.Unlock()
@@ -1692,16 +1699,16 @@ func (m *Model) ensureHyperGnomonCmd(endpoint, network string) tea.Cmd {
 		m.hyperGnomon.Close()
 		m.hyperGnomon = nil
 	}
+	m.hyperStarting = true
+	m.hyperStartingEndpoint = endpoint
+	m.hyperStartingNetwork = normNet
 	m.hyperMu.Unlock()
 
 	return func() tea.Msg {
 		start := time.Now()
-		// Bound the whole startup: NewHyperGnomon opens bbolt with
-		// Timeout: 0 (wait indefinitely for the file lock), so a second app
-		// instance — or a stale test process — holding
-		// ~/.derotui/hypergnomon/<net>/HYPERGNOMON.db would block forever.
-		// A hung startup must surface as an error msg, not a frozen cmd.
-		const startupTimeout = 15 * time.Second
+		// NewHyperGnomon may wait for the bbolt lock while another process
+		// owns the database. The model-level in-flight guard ensures ticks
+		// do not start competing constructors during that wait.
 		resultCh := make(chan hyperStartedMsg, 1)
 		go func() {
 			h, err := wallet.NewHyperGnomon(endpoint, normNet, "", 8)
@@ -1713,12 +1720,17 @@ func (m *Model) ensureHyperGnomonCmd(endpoint, network string) tea.Cmd {
 			derolog.Info("hypergnomon", "scan.start", "HyperGnomon started", "endpoint", endpoint, "network", normNet, "startup_ms", fmt.Sprintf("%d", time.Since(start).Milliseconds()))
 			resultCh <- hyperStartedMsg{hyper: h, network: normNet}
 		}()
+		const startupTimeout = 15 * time.Second
 		select {
 		case msg := <-resultCh:
 			return msg
 		case <-time.After(startupTimeout):
-			derolog.Warn("hypergnomon", "start.timeout", "HyperGnomon startup timed out (bbolt lock held or daemon unreachable)", "endpoint", endpoint, "network", normNet)
-			return hyperStartedMsg{err: fmt.Sprintf("HyperGnomon startup timed out after %s (bbolt lock held or daemon unreachable)", startupTimeout), network: normNet}
+			derolog.Warn("hypergnomon", "start.timeout", "HyperGnomon startup timed out; keeping startup guard until constructor finishes", "endpoint", endpoint, "network", normNet)
+			return hyperStartedMsg{
+				err:      fmt.Sprintf("HyperGnomon startup timed out after %s", startupTimeout),
+				network:  normNet,
+				deferred: resultCh,
+			}
 		}
 	}
 }
@@ -1728,19 +1740,33 @@ func (m *Model) ensureHyperGnomonCmd(endpoint, network string) tea.Cmd {
 // is ready. Runs inside Update but only does cheap pointer assignment; the
 // heavy startup already happened inside the command.
 func (m *Model) handleHyperStarted(msg hyperStartedMsg) tea.Cmd {
-	if msg.err != "" {
-		return nil
+	// A timed-out constructor may still be waiting on the bbolt lock. Keep the
+	// in-flight guard set and wait for its real result before allowing a retry.
+	if msg.deferred != nil {
+		return func() tea.Msg { return <-msg.deferred }
 	}
 	if m.hyperMu == nil {
 		m.hyperMu = &sync.Mutex{}
+	}
+	m.hyperMu.Lock()
+	m.hyperStarting = false
+	m.hyperStartingEndpoint = ""
+	m.hyperStartingNetwork = ""
+	m.hyperMu.Unlock()
+	if msg.err != "" {
+		return nil
 	}
 	m.hyperMu.Lock()
 	already := m.hyperGnomon != nil && m.hyperGnomon.IsRunning()
 	if !already {
 		m.hyperGnomon = msg.hyper
 	}
+	current := m.hyperGnomon
 	m.hyperMu.Unlock()
 	if already {
+		if msg.hyper != nil && msg.hyper != current {
+			msg.hyper.Close()
+		}
 		return nil
 	}
 	m.hyperCompleteLogged = false

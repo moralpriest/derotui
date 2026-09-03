@@ -273,7 +273,8 @@ type tokenHistoryLoadedMsg struct {
 // here. Progress sampling is likewise done by a background poller inside
 // wallet.HyperGnomon; the UI only reads cheap cached values.
 type hyperStartedMsg struct {
-	hyper   *wallet.HyperGnomon
-	err     string
-	network string
+	hyper    *wallet.HyperGnomon
+	err      string
+	network  string
+	deferred <-chan hyperStartedMsg
 }

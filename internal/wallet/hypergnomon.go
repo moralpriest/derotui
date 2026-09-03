@@ -480,54 +480,70 @@ func lookupSCVars(endpoint, scid string, keys []string) map[string]string {
 	return vals
 }
 
-func liveSCVariables(endpoint, scid string) []*hgstructures.SCIDVariable {
-	scid = strings.ToLower(strings.TrimSpace(scid))
+func daemonGetSC(endpoint string, p rpc.GetSC_Params) (rpc.GetSC_Result, error) {
+	p.SCID = strings.ToLower(strings.TrimSpace(p.SCID))
 	endpoint = strings.TrimSpace(endpoint)
-	if scid == "" || endpoint == "" {
-		return nil
+	if p.SCID == "" {
+		return rpc.GetSC_Result{}, fmt.Errorf("scid required")
+	}
+	if endpoint == "" || endpoint == "Not connected" {
+		return rpc.GetSC_Result{}, fmt.Errorf("daemon not connected")
 	}
 	rpcURL, err := daemonRPCURL(endpoint)
 	if err != nil {
-		return nil
+		return rpc.GetSC_Result{}, err
 	}
-	params := rpc.GetSC_Params{SCID: scid, Variables: true}
 	bodyBytes, err := json.Marshal(map[string]interface{}{
-		"jsonrpc": "2.0", "id": "1", "method": "DERO.GetSC", "params": params,
+		"jsonrpc": "2.0", "id": "1", "method": "DERO.GetSC", "params": p,
 	})
 	if err != nil {
-		return nil
+		return rpc.GetSC_Result{}, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", rpcURL, strings.NewReader(string(bodyBytes)))
 	if err != nil {
-		return nil
+		return rpc.GetSC_Result{}, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := sharedHTTPClient.Do(req)
 	if err != nil {
-		return nil
+		return rpc.GetSC_Result{}, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil
+		return rpc.GetSC_Result{}, err
 	}
 	var rpcResp struct {
 		Result rpc.GetSC_Result `json:"result"`
+		Error  *struct {
+			Message string `json:"message"`
+		} `json:"error"`
 	}
 	if err := json.Unmarshal(body, &rpcResp); err != nil {
+		return rpc.GetSC_Result{}, err
+	}
+	if rpcResp.Error != nil && rpcResp.Error.Message != "" {
+		return rpc.GetSC_Result{}, fmt.Errorf("%s", rpcResp.Error.Message)
+	}
+	return rpcResp.Result, nil
+}
+
+func liveSCVariables(endpoint, scid string) []*hgstructures.SCIDVariable {
+	res, err := daemonGetSC(endpoint, rpc.GetSC_Params{SCID: scid, Variables: true})
+	if err != nil {
 		return nil
 	}
-	n := len(rpcResp.Result.VariableStringKeys) + len(rpcResp.Result.VariableUint64Keys)
+	n := len(res.VariableStringKeys) + len(res.VariableUint64Keys)
 	if n == 0 {
 		return nil
 	}
 	out := make([]*hgstructures.SCIDVariable, 0, n)
-	for k, v := range rpcResp.Result.VariableStringKeys {
+	for k, v := range res.VariableStringKeys {
 		out = append(out, &hgstructures.SCIDVariable{Key: k, Value: v})
 	}
-	for k, v := range rpcResp.Result.VariableUint64Keys {
+	for k, v := range res.VariableUint64Keys {
 		out = append(out, &hgstructures.SCIDVariable{Key: k, Value: v})
 	}
 	return out

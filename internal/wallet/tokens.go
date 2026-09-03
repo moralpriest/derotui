@@ -126,7 +126,7 @@ func (w *Wallet) ListTokens() []TokenInfo {
 	if w.wallet == nil {
 		return nil
 	}
-	balances := w.wallet.Balances()
+	balances := w.wallet.GetAccount().Balance
 	// EntriesNative is populated by TokenAdd before balances are decrypted;
 	// include those SCIDs too so a token is visible while its first sync is
 	// still in progress.

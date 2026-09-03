@@ -98,6 +98,15 @@ func TestIsGnomonMethod(t *testing.T) {
 	}
 }
 
+func TestIsDeroMethod(t *testing.T) {
+	if !isDeroMethod("DERO.GetSC") || !isDeroMethod("GetSC") {
+		t.Fatal("DERO.GetSC / GetSC should auto-allow")
+	}
+	if isDeroMethod("GetAddress") {
+		t.Fatal("wallet methods must still prompt")
+	}
+}
+
 func TestGnomonGetAllSCIDVariableDetailsInactive(t *testing.T) {
 	_, err := gnomonGetAllSCIDVariableDetails(context.Background(), gnomonSCIDParam{SCID: "aa"})
 	if err == nil || !strings.Contains(err.Error(), "not active") {

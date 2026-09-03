@@ -10,6 +10,47 @@ import (
 	"github.com/deroproject/dero-wallet-cli/internal/wallet"
 )
 
+func TestDiscoverTelaCatalogFooterHidesVoteHints(t *testing.T) {
+	m := NewDiscover()
+	m.SetTela([]wallet.CatalogEntry{{
+		SCID: strings.Repeat("f", 64), Class: "TELA-INDEX-1", Name: "Catalog app",
+	}}, false, false)
+
+	catalogView := stripANSI(m.View())
+	for _, hidden := range []string{"U Like", "D Dislike"} {
+		if strings.Contains(catalogView, hidden) {
+			t.Fatalf("catalog footer should hide %q: %q", hidden, catalogView)
+		}
+	}
+
+	m, _ = m.Update(tea.KeyPressMsg{Text: "i"})
+	infoView := stripANSI(m.View())
+	for _, visible := range []string{"U Like", "D Dislike"} {
+		if !strings.Contains(infoView, visible) {
+			t.Fatalf("info footer should keep %q: %q", visible, infoView)
+		}
+	}
+}
+
+func TestDiscoverTelaInfoUsesCompactFooter(t *testing.T) {
+	m := NewDiscover()
+	m.SetTela([]wallet.CatalogEntry{{
+		SCID: strings.Repeat("e", 64), Class: "TELA-INDEX-1", Name: "Info app",
+	}}, false, false)
+	m, _ = m.Update(tea.KeyPressMsg{Text: "i"})
+
+	view := stripANSI(m.View())
+	footer := "Ent Launch • C Copy SCID • U Like • D Dislike • I/Esc Close"
+	if !strings.Contains(view, footer) {
+		t.Fatalf("compact TELA info footer missing: %q", view)
+	}
+	for _, hidden := range []string{"S Sort", "O Ord", "F Filter"} {
+		if strings.Contains(view, hidden) {
+			t.Fatalf("info footer should hide %q: %q", hidden, view)
+		}
+	}
+}
+
 func TestDiscoverLikeRequiresConfirmation(t *testing.T) {
 	m := NewDiscover()
 	m.SetTela([]wallet.CatalogEntry{{

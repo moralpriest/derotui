@@ -631,18 +631,26 @@ func (m DiscoverModel) View() string {
 	if !m.descending {
 		order = "↑"
 	}
-	// Compact hint style (matches txdetails) so the footer fits one line in
-	// the 72-char box interior. n/m counter dropped to make room for F Filter.
-	footer := "Tab • S Sort " + discoverSortModes[m.sort] + order + " • O Ord • F Filter"
-	if m.tab == 0 {
-		footer += " • Ent Launch • I Info • U Like • D Dislike"
+	// The detail popup owns the interaction, so do not advertise controls that
+	// are currently hidden behind it. This keeps the info footer on one line.
+	footer := ""
+	if m.detail && len(rows) > 0 && m.cursor < len(rows) {
+		footer = "Ent Launch • C Copy SCID • I/Esc Close"
+		if m.tab == 0 {
+			footer = "Ent Launch • C Copy SCID • U Like • D Dislike • I/Esc Close"
+		}
 	} else {
-		footer += " • Ent • I Info"
+		footer = "Tab • S Sort " + discoverSortModes[m.sort] + order + " • O Ord • F Filter"
+		if m.tab == 0 {
+			footer += " • Ent Launch • I Info"
+		} else {
+			footer += " • Ent • I Info"
+		}
+		if m.votePending {
+			footer += " • Y Confirm • N Cancel"
+		}
+		footer += " • Esc"
 	}
-	if m.votePending {
-		footer += " • Y Confirm • N Cancel"
-	}
-	footer += " • Esc"
 	b.WriteString(styles.MutedStyle.Render(footer))
 	content := lipgloss.JoinVertical(lipgloss.Left, discTitle("Discover"), "", b.String())
 	return styles.ThemedBoxStyle().

@@ -37,6 +37,55 @@ func TestEnsureHyperGnomonCmdBadEndpoint(t *testing.T) {
 // TestEnsureHyperGnomonCmdSkipsWhenRunning verifies that when a healthy
 // indexer for the same endpoint/network is already running, no command is
 // spawned and the HUD is simply re-stamped.
+func TestEnsureHyperGnomonCmdSuppressesConcurrentStarts(t *testing.T) {
+	m := NewModel()
+
+	first := m.ensureHyperGnomonCmd("127.0.0.1:1", "Mainnet")
+	if first == nil {
+		t.Fatal("expected first startup command")
+	}
+	if second := m.ensureHyperGnomonCmd("127.0.0.1:1", "Mainnet"); second != nil {
+		t.Fatal("expected concurrent startup to be suppressed")
+	}
+	if !m.hyperStarting || m.hyperStartingEndpoint != "127.0.0.1:1" || m.hyperStartingNetwork != "mainnet" {
+		t.Fatalf("startup state not recorded: starting=%v endpoint=%q network=%q", m.hyperStarting, m.hyperStartingEndpoint, m.hyperStartingNetwork)
+	}
+
+	// An error result releases the guard so a later tick can retry.
+	m.handleHyperStarted(hyperStartedMsg{err: "daemon unavailable", network: "mainnet"})
+	if m.hyperStarting {
+		t.Fatal("startup guard should clear after an error")
+	}
+	if retry := m.ensureHyperGnomonCmd("127.0.0.1:1", "Mainnet"); retry == nil {
+		t.Fatal("expected retry command after startup error")
+	}
+}
+
+func TestHandleHyperStartedCompletesDeferredStartup(t *testing.T) {
+	m := NewModel()
+	m.hyperStarting = true
+	deferred := make(chan hyperStartedMsg, 1)
+	cmd := m.handleHyperStarted(hyperStartedMsg{deferred: deferred})
+	if cmd == nil {
+		t.Fatal("expected a command waiting for deferred startup")
+	}
+	if !m.hyperStarting {
+		t.Fatal("deferred startup must keep the in-flight guard set")
+	}
+
+	h := &wallet.HyperGnomon{}
+	deferred <- hyperStartedMsg{hyper: h, network: "mainnet"}
+	result := cmd()
+	msg, ok := result.(hyperStartedMsg)
+	if !ok || msg.hyper != h {
+		t.Fatalf("deferred result = %#v, want hyperStartedMsg for %p", result, h)
+	}
+	m.handleHyperStarted(msg)
+	if m.hyperStarting || m.hyperGnomon != h {
+		t.Fatalf("deferred startup not attached: starting=%v hyper=%p want %p", m.hyperStarting, m.hyperGnomon, h)
+	}
+}
+
 func TestEnsureHyperGnomonCmdSkipsWhenRunning(t *testing.T) {
 	m := NewModel()
 	m.hyperGnomon = &wallet.HyperGnomon{}

@@ -86,9 +86,9 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/deroproject/derohe => ../derohe
+replace github.com/deroproject/derohe => ../derohe // moralpriest/derohe dev (XSWD ID echo, same-origin, DERO timeout)
 
-replace github.com/hypergnomon/hypergnomon => ../HyperGnomon
+replace github.com/hypergnomon/hypergnomon => ../HyperGnomon // moralpriest/HyperGnomon engram (Gnomon compat fixes)
 
 replace github.com/civilware/epoch => ../epoch
 
