@@ -203,6 +203,14 @@ type telaLaunchMsg struct {
 	err  string
 }
 
+// telaVoteResultMsg carries the result of a wallet-signed TELA vote.
+type telaVoteResultMsg struct {
+	scid string
+	like bool
+	txID string
+	err  string
+}
+
 // tokensLoadedMsg carries tokens loaded wallet-locally (balances + tracked
 // SCIDs). Metadata may still be missing; the scan hydrates it incrementally.
 type tokensLoadedMsg struct {

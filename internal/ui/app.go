@@ -1274,6 +1274,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 
+	case telaVoteResultMsg:
+		if msg.err != "" {
+			derolog.Error("tela", "vote.failed", "TELA vote failed", "error", msg.err)
+			m.discover.SetVoteResult("", msg.err)
+		} else {
+			derolog.Info("tela", "vote.success", "TELA vote submitted", "txid", derolog.TruncateID(msg.txID))
+			m.discover.MarkVoted(msg.scid)
+			m.discover.SetVoteResult(msg.txID, "")
+			m.discoverRatingsLoading = false
+			if cmd := m.maybeFetchDiscoverRatings(); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
+		}
+
 	case telaLaunchMsg:
 		note := msg.err
 		if m.xswdBridge != nil && !m.xswdBridge.EpochRunning() {
@@ -2563,6 +2577,24 @@ func (m Model) dispatchPage(msg tea.Msg, cmds []tea.Cmd) (Model, tea.Cmd) {
 				m.page = PageWelcome
 			}
 			cmds = append(cmds, m.setWindowTitleCmd())
+		}
+		if scid, like, ok := m.discover.WantVote(); ok {
+			m.discover.ResetActions()
+			if m.wallet == nil {
+				m.discover.SetVoteResult("", "Open a wallet to vote")
+			} else if m.discover.HasVoted(scid) {
+				m.discover.SetVoteResult("", "You already voted for this TELA app")
+			} else {
+				m.hyperMu.Lock()
+				h := m.hyperGnomon
+				m.hyperMu.Unlock()
+				if h != nil && h.HasTELARating(scid, m.wallet.GetAddress()) {
+					m.discover.MarkVoted(scid)
+					m.discover.SetVoteResult("", "You already voted for this TELA app")
+				} else {
+					cmds = append(cmds, m.executeTelaVote(scid, like))
+				}
+			}
 		}
 		if scid, cancel, ok := m.discover.WantLaunch(); ok {
 			m.discover.ResetActions()

@@ -30,19 +30,23 @@ const (
 var discoverSortModes = []string{"A-Z", "Recent", "Rating", "SCID"}
 
 var (
-	discoverUpKeys    = key.NewBinding(key.WithKeys("up", "k"))
-	discoverDownKeys  = key.NewBinding(key.WithKeys("down", "j"))
-	discoverLeftKeys  = key.NewBinding(key.WithKeys("left", "h"))
-	discoverRightKeys = key.NewBinding(key.WithKeys("right", "l"))
-	discoverFilterKey = key.NewBinding(key.WithKeys("f"))
-	discoverSortKey   = key.NewBinding(key.WithKeys("s"))
-	discoverOrderKey  = key.NewBinding(key.WithKeys("o"))
-	discoverEnterKeys = key.NewBinding(key.WithKeys("enter"))
-	discoverInfoKeys  = key.NewBinding(key.WithKeys("i", "I"))
-	discoverCopySCID  = key.NewBinding(key.WithKeys("c", "C"))
-	discoverTab1      = key.NewBinding(key.WithKeys("1"))
-	discoverTab2      = key.NewBinding(key.WithKeys("2"))
-	discoverTab3      = key.NewBinding(key.WithKeys("3"))
+	discoverUpKeys     = key.NewBinding(key.WithKeys("up", "k"))
+	discoverDownKeys   = key.NewBinding(key.WithKeys("down", "j"))
+	discoverLeftKeys   = key.NewBinding(key.WithKeys("left", "h"))
+	discoverRightKeys  = key.NewBinding(key.WithKeys("right", "l"))
+	discoverFilterKey  = key.NewBinding(key.WithKeys("f"))
+	discoverSortKey    = key.NewBinding(key.WithKeys("s"))
+	discoverOrderKey   = key.NewBinding(key.WithKeys("o"))
+	discoverEnterKeys  = key.NewBinding(key.WithKeys("enter"))
+	discoverInfoKeys   = key.NewBinding(key.WithKeys("i", "I"))
+	discoverCopySCID   = key.NewBinding(key.WithKeys("c", "C"))
+	discoverLikeKey    = key.NewBinding(key.WithKeys("u", "U"))
+	discoverDislikeKey = key.NewBinding(key.WithKeys("d", "D"))
+	discoverConfirmYes = key.NewBinding(key.WithKeys("y", "Y"))
+	discoverConfirmNo  = key.NewBinding(key.WithKeys("n", "N"))
+	discoverTab1       = key.NewBinding(key.WithKeys("1"))
+	discoverTab2       = key.NewBinding(key.WithKeys("2"))
+	discoverTab3       = key.NewBinding(key.WithKeys("3"))
 )
 
 var discoverTabs = []struct {
@@ -76,12 +80,18 @@ type DiscoverModel struct {
 	wantLaunch   bool
 	launchSCID   string
 	cancelLaunch *atomic.Bool
+	votePending  bool
+	voteLike     bool
+	voteSCID     string
+	voting       bool
+	wantVote     bool
+	ratedSCIDs   map[string]bool
 	width        int
 	height       int
 }
 
 func NewDiscover() DiscoverModel {
-	m := DiscoverModel{descending: false} // A-Z default: ascending
+	m := DiscoverModel{descending: false, ratedSCIDs: make(map[string]bool)} // A-Z default: ascending
 	m.filter = components.NewInput("", "filter name / durl / scid", false)
 	m.filter.SetCharLimit(64)
 	return m
@@ -338,7 +348,56 @@ func (m DiscoverModel) WantLaunch() (scid string, cancel *atomic.Bool, ok bool) 
 	return m.launchSCID, m.cancelLaunch, true
 }
 
-func (m *DiscoverModel) ResetActions() { m.wantLaunch = false }
+// WantVote returns the selected TELA vote after the user confirms it.
+func (m DiscoverModel) WantVote() (scid string, like bool, ok bool) {
+	if !m.wantVote {
+		return "", false, false
+	}
+	return m.voteSCID, m.voteLike, true
+}
+
+func (m *DiscoverModel) ResetActions() {
+	m.wantLaunch = false
+	m.wantVote = false
+}
+
+// HasVoted reports whether this session has already submitted a vote for SCID.
+func (m DiscoverModel) HasVoted(scid string) bool {
+	return m.ratedSCIDs[strings.ToLower(strings.TrimSpace(scid))]
+}
+
+// MarkVoted prevents a second submission before the indexer sees the vote.
+func (m *DiscoverModel) MarkVoted(scid string) {
+	if m.ratedSCIDs == nil {
+		m.ratedSCIDs = make(map[string]bool)
+	}
+	m.ratedSCIDs[strings.ToLower(strings.TrimSpace(scid))] = true
+}
+
+// SetVoteResult finishes an asynchronous vote submission.
+func (m *DiscoverModel) SetVoteResult(txID, err string) {
+	m.voting = false
+	m.wantVote = false
+	if err != "" {
+		m.flash = err
+		m.flashOK = false
+		return
+	}
+	label := "Like"
+	if !m.voteLike {
+		label = "Dislike"
+	}
+	m.flash = label + " submitted"
+	m.flashOK = true
+	if txID != "" {
+		shortID := txID
+		if len(shortID) > 12 {
+			shortID = shortID[:12] + "..."
+		}
+		m.flash += " (TX " + shortID + ")"
+	}
+	m.voteSCID = ""
+}
 
 func (m *DiscoverModel) SetLaunchResult(link, err string) {
 	m.launching = false
@@ -356,6 +415,23 @@ func (m *DiscoverModel) SetLaunchResult(link, err string) {
 		m.flash = err
 		m.flashOK = false
 	}
+}
+
+func (m *DiscoverModel) beginVote(like bool) {
+	if m.tab != 0 || m.voting || m.votePending {
+		return
+	}
+	rows := m.rows()
+	if len(rows) == 0 || m.cursor < 0 || m.cursor >= len(rows) || rows[m.cursor].SCID == "" {
+		return
+	}
+	scid := rows[m.cursor].SCID
+	if m.HasVoted(scid) {
+		return
+	}
+	m.votePending = true
+	m.voteLike = like
+	m.voteSCID = scid
 }
 
 func (m *DiscoverModel) beginLaunch() {
@@ -414,8 +490,30 @@ func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
 	}
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
+		if m.votePending {
+			switch {
+			case key.Matches(msg, pageEscKeys), key.Matches(msg, discoverConfirmNo):
+				m.votePending = false
+				m.voteSCID = ""
+			case key.Matches(msg, discoverConfirmYes):
+				m.votePending = false
+				m.voting = true
+				m.wantVote = true
+				m.flash = "Submitting vote..."
+				m.flashOK = true
+			}
+			return m, nil
+		}
+		if m.voting {
+			return m, nil
+		}
 		switch {
 		case key.Matches(msg, pageEscKeys):
+			if m.votePending {
+				m.votePending = false
+				m.voteSCID = ""
+				return m, nil
+			}
 			if m.launching {
 				if m.cancelLaunch != nil {
 					m.cancelLaunch.Store(true)
@@ -431,6 +529,12 @@ func (m DiscoverModel) Update(msg tea.Msg) (DiscoverModel, tea.Cmd) {
 				return m, nil
 			}
 			m.cancelled = true
+			return m, nil
+		case key.Matches(msg, discoverLikeKey):
+			m.beginVote(true)
+			return m, nil
+		case key.Matches(msg, discoverDislikeKey):
+			m.beginVote(false)
 			return m, nil
 		case key.Matches(msg, discoverEnterKeys):
 			m.beginLaunch()
@@ -506,6 +610,14 @@ func (m DiscoverModel) View() string {
 		b.WriteString(m.renderTable(rows))
 		b.WriteString("\n")
 	}
+	if m.votePending {
+		voteWord := "dislike"
+		if m.voteLike {
+			voteWord = "like"
+		}
+		b.WriteString(styles.WarningStyle.Render(fmt.Sprintf("Submit %s for this TELA app? Costs %s", voteWord, "0.001 DERO")))
+		b.WriteString("\n")
+	}
 	if m.flash != "" {
 		st := styles.ErrorStyle
 		if m.flashOK {
@@ -523,9 +635,12 @@ func (m DiscoverModel) View() string {
 	// the 72-char box interior. n/m counter dropped to make room for F Filter.
 	footer := "Tab • S Sort " + discoverSortModes[m.sort] + order + " • O Ord • F Filter"
 	if m.tab == 0 {
-		footer += " • Ent Launch • I Info"
+		footer += " • Ent Launch • I Info • U Like • D Dislike"
 	} else {
 		footer += " • Ent • I Info"
+	}
+	if m.votePending {
+		footer += " • Y Confirm • N Cancel"
 	}
 	footer += " • Esc"
 	b.WriteString(styles.MutedStyle.Render(footer))
@@ -703,7 +818,7 @@ func (m DiscoverModel) discDetail(e wallet.CatalogEntry) string {
 	)
 	hint := "I Close  C Copy SCID"
 	if m.tab == 0 {
-		hint = "Ent Launch  I Close  C Copy SCID"
+		hint = "Ent Launch  I Close  C Copy SCID  U Like  D Dislike"
 	}
 	lines = append(lines, styles.MutedStyle.Render(hint))
 	body := lipgloss.JoinVertical(lipgloss.Left, lines...)

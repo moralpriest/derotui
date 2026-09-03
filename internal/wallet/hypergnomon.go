@@ -343,6 +343,22 @@ func (h *HyperGnomon) Catalog(class string) []CatalogEntry {
 // transactions — with the indexer holding write locks, doing this per row on
 // the UI thread froze the app. The UI calls this from a background command
 // and merges results via ApplyRatings.
+// HasTELARating reports whether an address already has a rating value stored
+// for a TELA SCID. Rating keys are the rater addresses in the indexed SC.
+func (h *HyperGnomon) HasTELARating(scid, address string) bool {
+	if h == nil || h.store == nil || strings.TrimSpace(scid) == "" || strings.TrimSpace(address) == "" {
+		return false
+	}
+	h.mu.Lock()
+	store := h.store
+	h.mu.Unlock()
+	if store == nil {
+		return false
+	}
+	values, uintValues := store.GetSCIDValuesByKey(strings.ToLower(strings.TrimSpace(scid)), strings.TrimSpace(address), 0, true)
+	return len(values) > 0 || len(uintValues) > 0
+}
+
 func (h *HyperGnomon) RatingsForSCIDs(scids []string) map[string]CatalogEntry {
 	out := make(map[string]CatalogEntry, len(scids))
 	if h == nil || h.store == nil {

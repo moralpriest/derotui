@@ -1129,6 +1129,17 @@ func (m *Model) loadTokenHistoryCmd(scid string) tea.Cmd {
 	}
 }
 
+func (m *Model) executeTelaVote(scid string, like bool) tea.Cmd {
+	w := m.wallet
+	return func() tea.Msg {
+		if w == nil {
+			return telaVoteResultMsg{scid: scid, like: like, err: "wallet not open"}
+		}
+		result := w.RateTELA(context.Background(), scid, like)
+		return telaVoteResultMsg{scid: scid, like: like, txID: result.TxID, err: result.Error}
+	}
+}
+
 func (m *Model) executeTokenTransfer() tea.Cmd {
 	w := m.wallet
 	scid := m.tokenSend.GetSCID()
